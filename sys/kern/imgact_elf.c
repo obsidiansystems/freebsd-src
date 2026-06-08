@@ -1558,7 +1558,8 @@ __elfN(freebsd_copyout_auxargs)(struct image_params *imgp, uintptr_t base)
 	imgp->auxargs = NULL;
 	KASSERT(pos - argarray <= AT_COUNT, ("Too many auxargs"));
 
-	error = copyout(argarray, (void *)base, sizeof(*argarray) * AT_COUNT);
+	error = imgp_copyout(imgp, argarray, (void *)base,
+	    sizeof(*argarray) * AT_COUNT);
 	free(argarray, M_TEMP);
 	return (error);
 }
@@ -1570,8 +1571,13 @@ __elfN(freebsd_fixup)(uintptr_t *stack_base, struct image_params *imgp)
 
 	base = (Elf_Addr *)*stack_base;
 	base--;
-	if (elf_suword(base, imgp->args->argc) == -1)
+#if __ELF_WORD_SIZE == 64
+	if (imgp_suword(imgp, base, imgp->args->argc) == -1)
 		return (EFAULT);
+#else
+	if (imgp_suword32(imgp, base, imgp->args->argc) == -1)
+		return (EFAULT);
+#endif
 	*stack_base = (uintptr_t)base;
 	return (0);
 }

@@ -825,4 +825,10 @@ FBSDprivate_1.0 {
 	__sys_pdwait;
 	_renameat2;
 	__sys_renameat2;
+	_proc_new;
+	__sys_proc_new;
+	_proc_setfd;
+	__sys_proc_setfd;
+	_proc_start;
+	__sys_proc_start;
 };

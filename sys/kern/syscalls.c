@@ -608,4 +608,7 @@ const char *syscallnames[] = {
 	"pdrfork",			/* 600 = pdrfork */
 	"pdwait",			/* 601 = pdwait */
 	"renameat2",			/* 602 = renameat2 */
+	"proc_new",			/* 603 = proc_new */
+	"proc_setfd",			/* 604 = proc_setfd */
+	"proc_start",			/* 605 = proc_start */
 };

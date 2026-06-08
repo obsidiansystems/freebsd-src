@@ -3429,4 +3429,25 @@
 		    int flags
 		);
 	}
+603	AUE_NULL	STD|CAPENABLED {
+		int proc_new(
+		    int fd,
+		    _In_z_ char **argv,
+		    _In_z_ char **envv,
+		    _Out_ int *procfdp,
+		    int flags
+		);
+	}
+604	AUE_NULL	STD|CAPENABLED {
+		int proc_setfd(
+		    int procfd,
+		    int child_fd,
+		    int parent_fd
+		);
+	}
+605	AUE_NULL	STD|CAPENABLED {
+		int proc_start(
+		    int procfd
+		);
+	}
 ; vim: syntax=off

@@ -3555,6 +3555,33 @@ systrace_args(int sysnum, void *params, uint64_t *uarg, int *n_args)
 		*n_args = 5;
 		break;
 	}
+	/* proc_new */
+	case 603: {
+		struct proc_new_args *p = params;
+		iarg[a++] = p->fd; /* int */
+		uarg[a++] = (intptr_t)p->argv; /* char ** */
+		uarg[a++] = (intptr_t)p->envv; /* char ** */
+		uarg[a++] = (intptr_t)p->procfdp; /* int * */
+		iarg[a++] = p->flags; /* int */
+		*n_args = 5;
+		break;
+	}
+	/* proc_setfd */
+	case 604: {
+		struct proc_setfd_args *p = params;
+		iarg[a++] = p->procfd; /* int */
+		iarg[a++] = p->child_fd; /* int */
+		iarg[a++] = p->parent_fd; /* int */
+		*n_args = 3;
+		break;
+	}
+	/* proc_start */
+	case 605: {
+		struct proc_start_args *p = params;
+		iarg[a++] = p->procfd; /* int */
+		*n_args = 1;
+		break;
+	}
 	default:
 		*n_args = 0;
 		break;
@@ -9521,6 +9548,54 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 			break;
 		};
 		break;
+	/* proc_new */
+	case 603:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		case 1:
+			p = "userland char **";
+			break;
+		case 2:
+			p = "userland char **";
+			break;
+		case 3:
+			p = "userland int *";
+			break;
+		case 4:
+			p = "int";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* proc_setfd */
+	case 604:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		case 1:
+			p = "int";
+			break;
+		case 2:
+			p = "int";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* proc_start */
+	case 605:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		default:
+			break;
+		};
+		break;
 	default:
 		break;
 	};
@@ -11546,6 +11621,21 @@ systrace_return_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 		break;
 	/* renameat2 */
 	case 602:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* proc_new */
+	case 603:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* proc_setfd */
+	case 604:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* proc_start */
+	case 605:
 		if (ndx == 0 || ndx == 1)
 			p = "int";
 		break;

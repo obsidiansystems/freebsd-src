@@ -1,0 +1,179 @@
+.\"
+.\" Copyright (c) 2026 John Ericson
+.\"
+.\" Redistribution and use in source and binary forms, with or without
+.\" modification, are permitted provided that the following conditions
+.\" are met:
+.\" 1. Redistributions of source code must retain the above copyright
+.\"    notice, this list of conditions and the following disclaimer.
+.\" 2. Redistributions in binary form must reproduce the above copyright
+.\"    notice, this list of conditions and the following disclaimer in the
+.\"    documentation and/or other materials provided with the distribution.
+.\"
+.\" THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+.\" ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+.\" IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+.\" ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+.\" FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+.\" DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+.\" OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+.\" HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+.\" LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+.\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+.\" SUCH DAMAGE.
+.\"
+.Dd June 8, 2026
+.Dt PROC_NEW 2
+.Os
+.Sh NAME
+.Nm proc_new ,
+.Nm proc_setfd ,
+.Nm proc_start
+.Nd create a process without fork
+.Sh LIBRARY
+.Lb libc
+.Sh SYNOPSIS
+.In sys/procdesc.h
+.Ft int
+.Fn proc_new "int fd" "char **argv" "char **envv" "int *procfdp" "int flags"
+.Ft int
+.Fn proc_setfd "int procfd" "int child_fd" "int parent_fd"
+.Ft int
+.Fn proc_start "int procfd"
+.Sh DESCRIPTION
+These system calls create and start a new process without using
+.Xr fork 2 .
+Unlike the traditional
+.Fn fork Ns / Ns Fn execve
+pattern, the new process is never a copy of the parent.
+Instead, a fresh process is created with the specified executable
+already loaded, an empty file descriptor table, and default signal
+handling.
+The process is not scheduled until explicitly started,
+allowing the caller to configure its file descriptors first.
+.Pp
+.Fn proc_new
+creates an unscheduled process by loading the executable referenced by
+the file descriptor
+.Fa fd
+(which must have been opened with
+.Dv O_EXEC
+or
+.Dv O_RDONLY ) .
+The arguments
+.Fa argv
+and
+.Fa envv
+specify the argument and environment vectors, as with
+.Xr fexecve 2 .
+On success, a process descriptor for the new process is stored in the
+integer pointed to by
+.Fa procfdp .
+The
+.Fa flags
+argument may include:
+.Bl -tag -width PD_CLOEXEC
+.It Dv PD_DAEMON
+Do not kill the process when the process descriptor is closed.
+.It Dv PD_CLOEXEC
+Set close-on-exec on the process descriptor.
+.El
+.Pp
+The returned process descriptor can be used with
+.Xr pdkill 2 ,
+.Xr pdwait 2 ,
+and
+.Xr pdgetpid 2
+in the same way as descriptors returned by
+.Xr pdfork 2 .
+.Pp
+.Fn proc_setfd
+installs a file descriptor into the new process before it is started.
+The file descriptor
+.Fa parent_fd
+from the calling process is duplicated as descriptor
+.Fa child_fd
+in the process identified by
+.Fa procfd .
+This may be called multiple times to set up the new process's
+standard I/O and any other descriptors it needs.
+If
+.Fa child_fd
+is already set, it is replaced.
+.Pp
+.Fn proc_start
+submits the process to the scheduler, causing it to begin execution.
+After this call, the process descriptor behaves identically to one
+created by
+.Xr pdfork 2 .
+.Sh RETURN VALUES
+.Fn proc_new
+returns 0 on success.
+On failure, \-1 is returned,
+.Va errno
+is set, and no process or descriptor is created.
+.Pp
+.Fn proc_setfd
+and
+.Fn proc_start
+return 0 on success, or \-1 on failure with
+.Va errno
+set.
+.Sh ERRORS
+.Fn proc_new
+may fail with:
+.Bl -tag -width Er
+.It Bq Er ENOEXEC
+The file referenced by
+.Fa fd
+is not a recognized executable format.
+.It Bq Er EACCES
+Permission to execute the file was denied.
+.It Bq Er EAGAIN
+The system process limit was reached.
+.It Bq Er ENOMEM
+Insufficient memory.
+.El
+.Pp
+.Fn proc_setfd
+may fail with:
+.Bl -tag -width Er
+.It Bq Er EBADF
+.Fa procfd
+or
+.Fa parent_fd
+is not a valid file descriptor.
+.It Bq Er EINVAL
+The process referenced by
+.Fa procfd
+has already been started.
+.El
+.Pp
+.Fn proc_start
+may fail with:
+.Bl -tag -width Er
+.It Bq Er EBADF
+.Fa procfd
+is not a valid file descriptor.
+.It Bq Er EINVAL
+The process has already been started, or
+.Fn proc_new
+did not complete successfully.
+.El
+.Sh SEE ALSO
+.Xr execve 2 ,
+.Xr fexecve 2 ,
+.Xr fork 2 ,
+.Xr pdfork 2 ,
+.Xr pdkill 2 ,
+.Xr pdwait 2
+.Sh HISTORY
+The
+.Fn proc_new ,
+.Fn proc_setfd ,
+and
+.Fn proc_start
+system calls first appeared in
+.Fx 15.0 .
+.Sh AUTHORS
+.An John Ericson

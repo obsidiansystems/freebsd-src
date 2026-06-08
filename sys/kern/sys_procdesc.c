@@ -376,7 +376,21 @@ procdesc_close(struct file *fp, struct thread *td)
 	} else {
 		PROC_LOCK(p);
 		AUDIT_ARG_PROCESS(p);
-		if (p->p_state == PRS_ZOMBIE) {
+		if (p->p_state == PRS_NEW &&
+		    (p->p_flag & P_INEXEC) != 0) {
+			/*
+			 * Embryonic process that was never started.
+			 * It has no running thread, so we can't send
+			 * SIGKILL.  Directly tear it down.
+			 */
+			pd->pd_proc = NULL;
+			p->p_procdesc = NULL;
+			pd->pd_pid = -1;
+			procdesc_free(pd);
+			PROC_UNLOCK(p);
+			sx_xunlock(&proctree_lock);
+			proc_destroy_embryonic(p);
+		} else if (p->p_state == PRS_ZOMBIE) {
 			/*
 			 * If the process is already dead and just awaiting
 			 * reaping, do that now.  This will release the

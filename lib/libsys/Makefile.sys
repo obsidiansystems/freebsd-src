@@ -496,6 +496,8 @@ MLINKS+=ntp_adjtime.2 ntp_gettime.2
 MLINKS+=open.2 openat.2
 MLINKS+=pathconf.2 fpathconf.2
 MLINKS+=pathconf.2 lpathconf.2
+MLINKS+=proc_new.2 proc_setfd.2 \
+	proc_new.2 proc_start.2
 MLINKS+=pdfork.2 pdgetpid.2 \
 	pdfork.2 pdkill.2 \
 	pdfork.2 pdrfork.2 \

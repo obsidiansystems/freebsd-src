@@ -348,6 +348,220 @@ retry:
 	return (result);
 }
 
+/*
+ * Allocate a new process structure with thread, credentials, resource
+ * accounting, and MAC label.  On success, the returned proc has:
+ *   - p_ucred set (cow ref of td's cred)
+ *   - RACCT initialized
+ *   - MAC initialized
+ *   - uid proc count incremented
+ *   - p_klist allocated
+ *   - a linked thread with kernel stack
+ *
+ * On failure, all partial allocations are cleaned up.
+ * nprocs is incremented on entry and decremented on failure.
+ */
+int
+fork_alloc_proc(struct thread *td, int pages, struct proc **procp,
+    struct thread **tdp)
+{
+	struct proc *p1, *newproc;
+	struct thread *td2;
+	struct ucred *cred;
+	int error, nprocs_new;
+	static int curfail;
+	static struct timeval lastfail;
+
+	p1 = td->td_proc;
+
+	/*
+	 * Increment the nprocs resource before allocations occur.
+	 * Although process entries are dynamically created, we still
+	 * keep a global limit on the maximum number we will
+	 * create. There are hard-limits as to the number of processes
+	 * that can run, established by the KVA and memory usage for
+	 * the process data.
+	 *
+	 * Don't allow a nonprivileged user to use the last ten
+	 * processes; don't let root exceed the limit.
+	 */
+	nprocs_new = atomic_fetchadd_int(&nprocs, 1) + 1;
+	if (nprocs_new >= maxproc - 10) {
+		if (priv_check_cred(td->td_ucred, PRIV_MAXPROC) != 0 ||
+		    nprocs_new >= maxproc) {
+			error = EAGAIN;
+			sx_xlock(&allproc_lock);
+			if (ppsratecheck(&lastfail, &curfail, 1)) {
+				printf("maxproc limit exceeded by uid %u "
+				    "(pid %d); see tuning(7) and "
+				    "login.conf(5)\n",
+				    td->td_ucred->cr_ruid, p1->p_pid);
+			}
+			sx_xunlock(&allproc_lock);
+			goto fail2;
+		}
+	}
+
+	if (pages == 0)
+		pages = kstack_pages;
+	/* Allocate new proc. */
+	newproc = uma_zalloc(proc_zone, M_WAITOK);
+	td2 = FIRST_THREAD_IN_PROC(newproc);
+	if (td2 == NULL) {
+		td2 = thread_alloc(pages);
+		if (td2 == NULL) {
+			error = ENOMEM;
+			goto fail2;
+		}
+		proc_linkup(newproc, td2);
+	} else {
+		error = thread_recycle(td2, pages);
+		if (error != 0)
+			goto fail2;
+	}
+
+	/*
+	 * XXX: This is ugly; when we copy resource usage, we need to bump
+	 *      per-cred resource counters.
+	 */
+	newproc->p_ucred = crcowget(td->td_ucred);
+
+	/*
+	 * Initialize resource accounting for the child process.
+	 */
+	error = racct_proc_fork(p1, newproc);
+	if (error != 0) {
+		error = EAGAIN;
+		goto fail1;
+	}
+
+#ifdef MAC
+	mac_proc_init(newproc);
+#endif
+
+	/*
+	 * Increment the count of procs running with this uid. Don't allow
+	 * a nonprivileged user to exceed their current limit.
+	 */
+	cred = td->td_ucred;
+	if (!chgproccnt(cred->cr_ruidinfo, 1, lim_cur(td, RLIMIT_NPROC))) {
+		if (priv_check_cred(cred, PRIV_PROC_LIMIT) != 0)
+			goto fail0;
+		chgproccnt(cred->cr_ruidinfo, 1, 0);
+	}
+
+	newproc->p_klist = knlist_alloc(&newproc->p_mtx);
+
+	*procp = newproc;
+	*tdp = td2;
+	return (0);
+
+fail0:
+	error = EAGAIN;
+#ifdef MAC
+	mac_proc_destroy(newproc);
+#endif
+	racct_proc_exit(newproc);
+fail1:
+	proc_unset_cred(newproc, false);
+fail2:
+	uma_zfree(proc_zone, newproc);
+	atomic_add_int(&nprocs, -1);
+	if (error != 0)
+		pause("fork", hz / 2);
+	return (error);
+}
+
+/*
+ * Assign a PID and register the process in the global process lists
+ * (allproc, pidhash, tidhash) and prison.  The process must be in
+ * PRS_NEW on entry.
+ */
+void
+fork_register_proc(struct proc *p2, struct thread *td2, int flags)
+{
+
+	/* Tell the prison that we exist. */
+	prison_proc_hold(p2->p_ucred->cr_prison);
+
+	p2->p_state = PRS_NEW;		/* protect against others */
+	p2->p_pid = fork_findpid(flags);
+	AUDIT_ARG_PID(p2->p_pid);
+
+	sx_xlock(&allproc_lock);
+	LIST_INSERT_HEAD(&allproc, p2, p_list);
+	allproc_gen++;
+	prison_proc_link(p2->p_ucred->cr_prison, p2);
+	sx_xunlock(&allproc_lock);
+
+	sx_xlock(PIDHASHLOCK(p2->p_pid));
+	LIST_INSERT_HEAD(PIDHASH(p2->p_pid), p2, p_hash);
+	sx_xunlock(PIDHASHLOCK(p2->p_pid));
+
+	tidhash_add(td2);
+}
+
+/*
+ * Join p2 to p1's process group, initialize p2's child/orphan lists,
+ * and attach p2 to its parent and reaper.
+ *
+ * Must be called with proctree_lock xlocked, PGRP_LOCK(p1->p_pgrp)
+ * held, PROC_LOCK(p2) held, and PROC_LOCK(p1) held.
+ * On return, all locks are released.
+ *
+ * If nowait is true (RFNOWAIT), p2 becomes a child of p1's reaper
+ * instead of p1 itself.
+ */
+void
+fork_proc_tree(struct proc *p1, struct proc *p2, bool nowait)
+{
+	struct proc *pptr;
+
+	sx_assert(&proctree_lock, SA_XLOCKED);
+	PROC_LOCK_ASSERT(p2, MA_OWNED);
+	PROC_LOCK_ASSERT(p1, MA_OWNED);
+
+	p2->p_pgrp = p1->p_pgrp;
+	LIST_INSERT_AFTER(p1, p2, p_pglist);
+	PGRP_UNLOCK(p1->p_pgrp);
+	LIST_INIT(&p2->p_children);
+	LIST_INIT(&p2->p_orphans);
+
+	callout_init_mtx(&p2->p_itcallout, &p2->p_mtx, 0);
+
+	PROC_UNLOCK(p1);
+
+	/*
+	 * Attach the new process to its parent.
+	 *
+	 * If RFNOWAIT is set, the newly created process becomes a child
+	 * of init.  This effectively disassociates the child from the
+	 * parent.
+	 */
+	if (nowait) {
+		pptr = p1->p_reaper;
+		p2->p_reaper = pptr;
+	} else {
+		p2->p_reaper = (p1->p_treeflag & P_TREE_REAPER) != 0 ?
+		    p1 : p1->p_reaper;
+		pptr = p1;
+	}
+	p2->p_pptr = pptr;
+	p2->p_oppid = pptr->p_pid;
+	LIST_INSERT_HEAD(&pptr->p_children, p2, p_sibling);
+	LIST_INIT(&p2->p_reaplist);
+	LIST_INSERT_HEAD(&p2->p_reaper->p_reaplist, p2, p_reapsibling);
+	if (p2->p_reaper == p1 && p1 != initproc) {
+		p2->p_reapsubtree = p2->p_pid;
+		proc_id_set_cond(PROC_ID_REAP, p2->p_pid);
+	}
+	sx_xunlock(&proctree_lock);
+
+	/* Inform accounting that we have forked. */
+	p2->p_acflag = AFORK;
+	PROC_UNLOCK(p2);
+}
+
 static int
 fork_norfproc(struct thread *td, int flags)
 {
@@ -414,7 +628,7 @@ static void
 do_fork(struct thread *td, struct fork_req *fr, struct proc *p2, struct thread *td2,
     struct vmspace *vm2, struct file *fp_procdesc)
 {
-	struct proc *p1, *pptr;
+	struct proc *p1;
 	struct filedesc *fd;
 	struct filedesc_to_leader *fdtol;
 	struct pwddesc *pd;
@@ -431,25 +645,8 @@ do_fork(struct thread *td, struct fork_req *fr, struct proc *p2, struct thread *
 	bzero(&p2->p_startzero,
 	    __rangeof(struct proc, p_startzero, p_endzero));
 
-	/* Tell the prison that we exist. */
-	prison_proc_hold(p2->p_ucred->cr_prison);
-
-	p2->p_state = PRS_NEW;		/* protect against others */
-	p2->p_pid = fork_findpid(fr->fr_flags);
-	AUDIT_ARG_PID(p2->p_pid);
+	fork_register_proc(p2, td2, fr->fr_flags);
 	TSFORK(p2->p_pid, p1->p_pid);
-
-	sx_xlock(&allproc_lock);
-	LIST_INSERT_HEAD(&allproc, p2, p_list);
-	allproc_gen++;
-	prison_proc_link(p2->p_ucred->cr_prison, p2);
-	sx_xunlock(&allproc_lock);
-
-	sx_xlock(PIDHASHLOCK(p2->p_pid));
-	LIST_INSERT_HEAD(PIDHASH(p2->p_pid), p2, p_hash);
-	sx_xunlock(PIDHASHLOCK(p2->p_pid));
-
-	tidhash_add(td2);
 
 	/*
 	 * Malloc things while we don't hold any locks.
@@ -667,45 +864,7 @@ do_fork(struct thread *td, struct fork_req *fr, struct proc *p2, struct thread *
 	if (fr->fr_flags & RFPPWAIT)
 		p2->p_flag |= P_PPWAIT;
 
-	p2->p_pgrp = p1->p_pgrp;
-	LIST_INSERT_AFTER(p1, p2, p_pglist);
-	PGRP_UNLOCK(p1->p_pgrp);
-	LIST_INIT(&p2->p_children);
-	LIST_INIT(&p2->p_orphans);
-
-	callout_init_mtx(&p2->p_itcallout, &p2->p_mtx, 0);
-
-	PROC_UNLOCK(p1);
-
-	/*
-	 * Attach the new process to its parent.
-	 *
-	 * If RFNOWAIT is set, the newly created process becomes a child
-	 * of init.  This effectively disassociates the child from the
-	 * parent.
-	 */
-	if ((fr->fr_flags & RFNOWAIT) != 0) {
-		pptr = p1->p_reaper;
-		p2->p_reaper = pptr;
-	} else {
-		p2->p_reaper = (p1->p_treeflag & P_TREE_REAPER) != 0 ?
-		    p1 : p1->p_reaper;
-		pptr = p1;
-	}
-	p2->p_pptr = pptr;
-	p2->p_oppid = pptr->p_pid;
-	LIST_INSERT_HEAD(&pptr->p_children, p2, p_sibling);
-	LIST_INIT(&p2->p_reaplist);
-	LIST_INSERT_HEAD(&p2->p_reaper->p_reaplist, p2, p_reapsibling);
-	if (p2->p_reaper == p1 && p1 != initproc) {
-		p2->p_reapsubtree = p2->p_pid;
-		proc_id_set_cond(PROC_ID_REAP, p2->p_pid);
-	}
-	sx_xunlock(&proctree_lock);
-
-	/* Inform accounting that we have forked. */
-	p2->p_acflag = AFORK;
-	PROC_UNLOCK(p2);
+	fork_proc_tree(p1, p2, (fr->fr_flags & RFNOWAIT) != 0);
 
 #ifdef KTRACE
 	ktrprocfork(p1, p2);
@@ -892,13 +1051,10 @@ fork1(struct thread *td, struct fork_req *fr)
 	struct proc *p1, *newproc;
 	struct thread *td2;
 	struct vmspace *vm2;
-	struct ucred *cred;
 	struct file *fp_procdesc;
 	struct pgrp *pg;
 	vm_ooffset_t mem_charged;
-	int error, nprocs_new;
-	static int curfail;
-	static struct timeval lastfail;
+	int error;
 	int flags, pages;
 	bool killsx_locked, singlethreaded;
 
@@ -959,34 +1115,6 @@ fork1(struct thread *td, struct fork_req *fr)
 	singlethreaded = false;
 
 	/*
-	 * Increment the nprocs resource before allocations occur.
-	 * Although process entries are dynamically created, we still
-	 * keep a global limit on the maximum number we will
-	 * create. There are hard-limits as to the number of processes
-	 * that can run, established by the KVA and memory usage for
-	 * the process data.
-	 *
-	 * Don't allow a nonprivileged user to use the last ten
-	 * processes; don't let root exceed the limit.
-	 */
-	nprocs_new = atomic_fetchadd_int(&nprocs, 1) + 1;
-	if (nprocs_new >= maxproc - 10) {
-		if (priv_check_cred(td->td_ucred, PRIV_MAXPROC) != 0 ||
-		    nprocs_new >= maxproc) {
-			error = EAGAIN;
-			sx_xlock(&allproc_lock);
-			if (ppsratecheck(&lastfail, &curfail, 1)) {
-				printf("maxproc limit exceeded by uid %u "
-				    "(pid %d); see tuning(7) and "
-				    "login.conf(5)\n",
-				    td->td_ucred->cr_ruid, p1->p_pid);
-			}
-			sx_xunlock(&allproc_lock);
-			goto fail2;
-		}
-	}
-
-	/*
 	 * If we are possibly multi-threaded, and there is a process
 	 * sending a signal to our group right now, ensure that our
 	 * other threads cannot be chosen for the signal queueing.
@@ -1002,7 +1130,7 @@ fork1(struct thread *td, struct fork_req *fr)
 			if (thread_single(p1, SINGLE_BOUNDARY)) {
 				PROC_UNLOCK(p1);
 				error = ERESTART;
-				goto fail2;
+				goto cleanup;
 			}
 			PROC_UNLOCK(p1);
 			singlethreaded = true;
@@ -1015,7 +1143,7 @@ fork1(struct thread *td, struct fork_req *fr)
 	 */
 	if (!killsx_locked && sx_slock_sig(&pg->pg_killsx) != 0) {
 		error = ERESTART;
-		goto fail2;
+		goto cleanup;
 	}
 	if (__predict_false(p1->p_pgrp != pg || sig_intr() != 0)) {
 		/*
@@ -1027,7 +1155,7 @@ fork1(struct thread *td, struct fork_req *fr)
 		sx_sunlock(&pg->pg_killsx);
 		killsx_locked = false;
 		error = ERESTART;
-		goto fail2;
+		goto cleanup;
 	} else {
 		killsx_locked = true;
 	}
@@ -1041,34 +1169,23 @@ fork1(struct thread *td, struct fork_req *fr)
 		error = procdesc_falloc(td, &fp_procdesc, fr->fr_pd_fd,
 		    fr->fr_pd_flags, fr->fr_pd_fcaps);
 		if (error != 0)
-			goto fail2;
+			goto cleanup;
 		AUDIT_ARG_FD(*fr->fr_pd_fd);
 	}
 
-	mem_charged = 0;
-	if (pages == 0)
-		pages = kstack_pages;
-	/* Allocate new proc. */
-	newproc = uma_zalloc(proc_zone, M_WAITOK);
-	td2 = FIRST_THREAD_IN_PROC(newproc);
-	if (td2 == NULL) {
-		td2 = thread_alloc(pages);
-		if (td2 == NULL) {
-			error = ENOMEM;
-			goto fail2;
-		}
-		proc_linkup(newproc, td2);
-	} else {
-		error = thread_recycle(td2, pages);
-		if (error != 0)
-			goto fail2;
-	}
+	/*
+	 * Allocate proc structure, thread, credentials, and resource
+	 * accounting.
+	 */
+	error = fork_alloc_proc(td, pages, &newproc, &td2);
+	if (error != 0)
+		goto fail_procdesc;
 
 	if ((flags & RFMEM) == 0) {
 		vm2 = vmspace_fork(p1->p_vmspace, &mem_charged);
 		if (vm2 == NULL) {
 			error = ENOMEM;
-			goto fail2;
+			goto fail_proc;
 		}
 		if (!swap_reserve(mem_charged)) {
 			/*
@@ -1079,63 +1196,32 @@ fork1(struct thread *td, struct fork_req *fr)
 			 */
 			swap_reserve_force(mem_charged);
 			error = ENOMEM;
-			goto fail2;
+			goto fail_proc;
 		}
 	} else
 		vm2 = NULL;
 
-	/*
-	 * XXX: This is ugly; when we copy resource usage, we need to bump
-	 *      per-cred resource counters.
-	 */
-	newproc->p_ucred = crcowget(td->td_ucred);
-
-	/*
-	 * Initialize resource accounting for the child process.
-	 */
-	error = racct_proc_fork(p1, newproc);
-	if (error != 0) {
-		error = EAGAIN;
-		goto fail1;
-	}
-
-#ifdef MAC
-	mac_proc_init(newproc);
-#endif
-
-	/*
-	 * Increment the count of procs running with this uid. Don't allow
-	 * a nonprivileged user to exceed their current limit.
-	 */
-	cred = td->td_ucred;
-	if (!chgproccnt(cred->cr_ruidinfo, 1, lim_cur(td, RLIMIT_NPROC))) {
-		if (priv_check_cred(cred, PRIV_PROC_LIMIT) != 0)
-			goto fail0;
-		chgproccnt(cred->cr_ruidinfo, 1, 0);
-	}
-
-	newproc->p_klist = knlist_alloc(&newproc->p_mtx);
-
 	do_fork(td, fr, newproc, td2, vm2, fp_procdesc);
 	error = 0;
 	goto cleanup;
-fail0:
-	error = EAGAIN;
+fail_proc:
+	if (vm2 != NULL)
+		vmspace_free(vm2);
+	/* fork_alloc_proc succeeded, so undo it in reverse. */
+	knlist_destroy(newproc->p_klist);
+	knlist_free(newproc->p_klist);
 #ifdef MAC
 	mac_proc_destroy(newproc);
 #endif
 	racct_proc_exit(newproc);
-fail1:
-	proc_unset_cred(newproc, false);
-fail2:
-	if (vm2 != NULL)
-		vmspace_free(vm2);
+	proc_unset_cred(newproc, true);
 	uma_zfree(proc_zone, newproc);
+	atomic_add_int(&nprocs, -1);
+fail_procdesc:
 	if ((flags & RFPROCDESC) != 0 && fp_procdesc != NULL) {
 		fdclose(td, fp_procdesc, *fr->fr_pd_fd);
 		fdrop(fp_procdesc, td);
 	}
-	atomic_add_int(&nprocs, -1);
 cleanup:
 	if (killsx_locked)
 		sx_sunlock(&pg->pg_killsx);
@@ -1264,6 +1350,90 @@ fork_return(struct thread *td, struct trapframe *frame)
 	if (KTRPOINT(td, KTR_SYSRET))
 		ktrsysret(td->td_sa.code, 0, 0);
 #endif
+}
+
+/*
+ * Destroy an embryonic process that was never started.
+ * Called when proc_new() exec fails or when the procdesc is closed
+ * before proc_start().
+ */
+void
+proc_destroy_embryonic(struct proc *p)
+{
+	struct thread *td;
+
+	PROC_LOCK_ASSERT(p, MA_NOTOWNED);
+	MPASS(p->p_state == PRS_NEW);
+	MPASS(p->p_flag & P_INEXEC);
+
+	td = FIRST_THREAD_IN_PROC(p);
+
+	/*
+	 * Remove from process group.
+	 */
+	sx_xlock(&proctree_lock);
+	PROC_LOCK(p);
+	proc_clear_orphan(p);
+	LIST_REMOVE(p, p_sibling);
+	LIST_REMOVE(p, p_reapsibling);
+	PROC_UNLOCK(p);
+
+	PGRP_LOCK(p->p_pgrp);
+	LIST_REMOVE(p, p_pglist);
+	PGRP_UNLOCK(p->p_pgrp);
+	sx_xunlock(&proctree_lock);
+
+	/*
+	 * Remove from global lists.
+	 */
+	sx_xlock(PIDHASHLOCK(p->p_pid));
+	LIST_REMOVE(p, p_hash);
+	sx_xunlock(PIDHASHLOCK(p->p_pid));
+
+	tidhash_remove(td);
+
+	sx_xlock(&allproc_lock);
+	LIST_REMOVE(p, p_list);
+	allproc_gen++;
+	sx_xunlock(&allproc_lock);
+
+	/*
+	 * Release resources.
+	 */
+	if (p->p_textvp != NULL)
+		vrele(p->p_textvp);
+	if (p->p_textdvp != NULL)
+		vrele(p->p_textdvp);
+	free(p->p_binname, M_PARGS);
+
+	/*
+	 * Free file descriptors and pwd using the embryonic thread.
+	 * It is not running, but fdescfree/pdescfree just need
+	 * td->td_proc to be correct.
+	 */
+	fdescfree(FIRST_THREAD_IN_PROC(p));
+	pdescfree(FIRST_THREAD_IN_PROC(p));
+
+	sigacts_free(p->p_sigacts);
+	if (p->p_vmspace != NULL)
+		vmspace_free(p->p_vmspace);
+
+	lim_free(p->p_limit);
+	pstats_free(p->p_stats);
+
+	knlist_destroy(p->p_klist);
+	knlist_free(p->p_klist);
+
+	prison_proc_free(p->p_ucred->cr_prison);
+
+#ifdef MAC
+	mac_proc_destroy(p);
+#endif
+	racct_proc_exit(p);
+	proc_unset_cred(p, true);
+
+	uma_zfree(proc_zone, p);
+	atomic_add_int(&nprocs, -1);
 }
 
 static void

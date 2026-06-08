@@ -475,6 +475,9 @@ typedef int (__sys_kexec_load_t)(uint64_t, u_long, struct kexec_segment *, u_lon
 typedef int (__sys_pdrfork_t)(int *, int, int);
 typedef int (__sys_pdwait_t)(int, int *, int, struct __wrusage *, struct __siginfo *);
 typedef int (__sys_renameat2_t)(int, const char *, int, const char *, int);
+typedef int (__sys_proc_new_t)(int, char **, char **, int *, int);
+typedef int (__sys_proc_setfd_t)(int, int, int);
+typedef int (__sys_proc_start_t)(int);
 
 _Noreturn void __sys__exit(int rval);
 int __sys_fork(void);
@@ -885,6 +888,9 @@ int __sys_kexec_load(uint64_t entry, u_long nseg, struct kexec_segment * segment
 int __sys_pdrfork(int * fdp, int pdflags, int rfflags);
 int __sys_pdwait(int fd, int * status, int options, struct __wrusage * wrusage, struct __siginfo * info);
 int __sys_renameat2(int oldfd, const char * old, int newfd, const char * new, int flags);
+int __sys_proc_new(int fd, char ** argv, char ** envv, int * procfdp, int flags);
+int __sys_proc_setfd(int procfd, int child_fd, int parent_fd);
+int __sys_proc_start(int procfd);
 __END_DECLS
 
 #endif /* __LIBSYS_H_ */

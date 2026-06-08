@@ -95,6 +95,8 @@ struct image_params {
 #define IMGP_ASLR_SHARED_PAGE	0x1
 	uint32_t imgp_flags;
 	struct vnode *interpreter_vp;	/* vnode of the interpreter */
+	struct thread *caller_td;	/* non-NULL: embryonic exec, use this
+					   thread for fd lookups/cred checks */
 };
 
 #ifdef _KERNEL
@@ -113,9 +115,46 @@ int	exec_args_adjust_args(struct image_args *args, size_t consume,
 	    ssize_t extend);
 char	*exec_args_get_begin_envv(struct image_args *args);
 int	exec_check_permissions(struct image_params *);
+int	exec_fgetvp(struct image_params *, struct thread *, int,
+	    struct vnode **);
+int	exec_prepare_image(struct image_params *);
+void	exec_set_comm(struct image_params *, const char *, int);
 void	exec_cleanup(struct thread *td, struct vmspace *);
+void	exec_cleanup_imgp(struct image_params *, struct thread *, int);
+void	exec_cleanup_cred(struct image_params *, struct ucred *,
+#ifdef MAC
+	    struct label *,
+#endif
+	    struct image_args *, struct pargs *, struct uidinfo *);
 int	exec_copyout_strings(struct image_params *, uintptr_t *);
+int	exec_copyout_stack(struct image_params *, uintptr_t *);
+struct pargs *exec_cache_args(struct image_args *);
+int	exec_activate(struct image_params *, struct ucred *,
+	    struct vattr *, struct uidinfo **, bool *
+#ifdef MAC
+	    , struct label *, bool *
+#endif
+	    );
+int	imgp_copyout(struct image_params *, const void *, void *, size_t);
+int	imgp_suword(struct image_params *, void *, long);
+int	imgp_suword32(struct image_params *, void *, int32_t);
+void	exec_install_setid(struct image_params *, struct thread *,
+	    struct ucred **
+#ifdef MAC
+	    , bool, struct label *
+#endif
+	    );
+void	exec_finalize(struct image_params *, struct vnode *,
+	    char **, struct pargs **, uintptr_t);
 void	exec_free_args(struct image_args *);
+void	exec_interpreter_cleanup(struct image_params *, struct thread *
+#ifdef MAC
+	    , struct label **
+#endif
+	    );
+void	exec_interpreter_vp(struct image_params *, struct vnode **);
+int	exec_interpreter_namei(struct image_params *, struct thread *,
+	    struct nameidata *, struct vnode **, struct vnode **, char **);
 int	exec_map_stack(struct image_params *);
 int	exec_new_vmspace(struct image_params *, struct sysentvec *);
 void	exec_setregs(struct thread *, struct image_params *, uintptr_t);

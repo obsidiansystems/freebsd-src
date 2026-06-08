@@ -839,7 +839,11 @@ struct proc {
 #define	P_HWPMC		0x00800000	/* Process is using HWPMCs */
 #define	P_JAILED	0x01000000	/* Process is in jail. */
 #define	P_TOTAL_STOP	0x02000000	/* Stopped in stop_all_proc. */
-#define	P_INEXEC	0x04000000	/* Process is in execve(). */
+#define	P_INEXEC	0x04000000	/* Process is not yet scheduled. Either
+					   it is in execve() (the original
+					   use-case) or it is an embryonic
+					   process whose state is still being
+					   set up (builder pattern). */
 #define	P_STATCHILD	0x08000000	/* Child process stopped or exited. */
 #define	P_INMEM		0x10000000	/* Loaded into memory, always set. */
 #define	P_UNUSED1	0x20000000	/* --available-- */
@@ -1163,9 +1167,14 @@ int	enterpgrp(struct proc *p, pid_t pgid, struct pgrp *pgrp,
 	    struct session *sess);
 int	enterthispgrp(struct proc *p, struct pgrp *pgrp);
 int	fork1(struct thread *, struct fork_req *);
+int	fork_alloc_proc(struct thread *, int, struct proc **,
+	    struct thread **);
+void	fork_register_proc(struct proc *, struct thread *, int);
+void	fork_proc_tree(struct proc *, struct proc *, bool);
 void	fork_exit(void (*)(void *, struct trapframe *), void *,
 	    struct trapframe *);
 void	fork_return(struct thread *, struct trapframe *);
+void	proc_destroy_embryonic(struct proc *);
 int	inferior(struct proc *p);
 void	itimer_proc_continue(struct proc *p);
 void	kqtimer_proc_continue(struct proc *p);

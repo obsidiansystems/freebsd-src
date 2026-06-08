@@ -35,6 +35,7 @@ ATF_TESTS_C+=	module_test
 ATF_TESTS_C+=	pdrfork
 ATF_TESTS_C+=	pdwait
 ATF_TESTS_C+=	prace
+ATF_TESTS_C+=	proc_new
 ATF_TESTS_C+=	procdesc
 ATF_TESTS_C+=	ptrace_test
 TEST_METADATA.ptrace_test+=		timeout="15"

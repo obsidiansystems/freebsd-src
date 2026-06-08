@@ -1932,6 +1932,21 @@ struct renameat2_args {
 	char new_l_[PADL_(const char *)]; const char * new; char new_r_[PADR_(const char *)];
 	char flags_l_[PADL_(int)]; int flags; char flags_r_[PADR_(int)];
 };
+struct proc_new_args {
+	char fd_l_[PADL_(int)]; int fd; char fd_r_[PADR_(int)];
+	char argv_l_[PADL_(char **)]; char ** argv; char argv_r_[PADR_(char **)];
+	char envv_l_[PADL_(char **)]; char ** envv; char envv_r_[PADR_(char **)];
+	char procfdp_l_[PADL_(int *)]; int * procfdp; char procfdp_r_[PADR_(int *)];
+	char flags_l_[PADL_(int)]; int flags; char flags_r_[PADR_(int)];
+};
+struct proc_setfd_args {
+	char procfd_l_[PADL_(int)]; int procfd; char procfd_r_[PADR_(int)];
+	char child_fd_l_[PADL_(int)]; int child_fd; char child_fd_r_[PADR_(int)];
+	char parent_fd_l_[PADL_(int)]; int parent_fd; char parent_fd_r_[PADR_(int)];
+};
+struct proc_start_args {
+	char procfd_l_[PADL_(int)]; int procfd; char procfd_r_[PADR_(int)];
+};
 int	sys__exit(struct thread *, struct _exit_args *);
 int	sys_fork(struct thread *, struct fork_args *);
 int	sys_read(struct thread *, struct read_args *);
@@ -2342,6 +2357,9 @@ int	sys_kexec_load(struct thread *, struct kexec_load_args *);
 int	sys_pdrfork(struct thread *, struct pdrfork_args *);
 int	sys_pdwait(struct thread *, struct pdwait_args *);
 int	sys_renameat2(struct thread *, struct renameat2_args *);
+int	sys_proc_new(struct thread *, struct proc_new_args *);
+int	sys_proc_setfd(struct thread *, struct proc_setfd_args *);
+int	sys_proc_start(struct thread *, struct proc_start_args *);
 
 #ifdef COMPAT_43
 
@@ -3344,6 +3362,9 @@ int	freebsd14_setgroups(struct thread *, struct freebsd14_setgroups_args *);
 #define	SYS_AUE_pdrfork	AUE_PDRFORK
 #define	SYS_AUE_pdwait	AUE_PDWAIT
 #define	SYS_AUE_renameat2	AUE_RENAMEAT
+#define	SYS_AUE_proc_new	AUE_NULL
+#define	SYS_AUE_proc_setfd	AUE_NULL
+#define	SYS_AUE_proc_start	AUE_NULL
 
 #undef PAD_
 #undef PADL_
