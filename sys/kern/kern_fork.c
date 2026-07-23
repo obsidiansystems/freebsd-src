@@ -364,6 +364,103 @@ retry:
 	return (result);
 }
 
+/*
+ * Assign a PID and register the process in the global process lists
+ * (allproc, pidhash, tidhash) and prison.  The process must be in
+ * PRS_NEW on entry.
+ */
+void
+fork_register_proc(struct proc *p2, struct thread *td2, int flags)
+{
+
+	/* Tell the prison that we exist. */
+	prison_proc_hold(p2->p_ucred->cr_prison);
+
+	p2->p_state = PRS_NEW;		/* protect against others */
+	p2->p_pid = fork_findpid(flags);
+	AUDIT_ARG_PID(p2->p_pid);
+
+	sx_xlock(&allproc_lock);
+	LIST_INSERT_HEAD(&allproc, p2, p_list);
+	allproc_gen++;
+	prison_proc_link(p2->p_ucred->cr_prison, p2);
+	sx_xunlock(&allproc_lock);
+
+	sx_xlock(PIDHASHLOCK(p2->p_pid));
+	LIST_INSERT_HEAD(PIDHASH(p2->p_pid), p2, p_hash);
+	sx_xunlock(PIDHASHLOCK(p2->p_pid));
+
+	tidhash_add(td2);
+}
+
+/*
+ * Join p2 to p1's process group, initialize p2's child/orphan lists,
+ * and attach p2 to its parent and reaper.
+ *
+ * Must be called with proctree_lock xlocked, PGRP_LOCK(p1->p_pgrp)
+ * held, PROC_LOCK(p2) held, and PROC_LOCK(p1) held.
+ * On return, all locks are released.
+ *
+ * If nowait is true (RFNOWAIT), p2 becomes a child of p1's reaper
+ * instead of p1 itself.
+ */
+void
+fork_proc_tree(struct proc *p1, struct proc *p2, bool nowait)
+{
+	struct proc *pptr;
+
+	sx_assert(&proctree_lock, SA_XLOCKED);
+	PROC_LOCK_ASSERT(p2, MA_OWNED);
+	PROC_LOCK_ASSERT(p1, MA_OWNED);
+
+	p2->p_pgrp = p1->p_pgrp;
+	LIST_INSERT_AFTER(p1, p2, p_pglist);
+	PGRP_UNLOCK(p1->p_pgrp);
+	LIST_INIT(&p2->p_children);
+	LIST_INIT(&p2->p_orphans);
+
+	callout_init_mtx(&p2->p_itcallout, &p2->p_mtx, 0);
+
+	PROC_UNLOCK(p1);
+
+	/*
+	 * Attach the new process to its parent.
+	 *
+	 * If RFNOWAIT is set, the newly created process becomes a child
+	 * of init.  This effectively disassociates the child from the
+	 * parent.
+	 */
+	if (nowait) {
+		pptr = p1->p_reaper;
+		p2->p_reaper = pptr;
+	} else {
+		p2->p_reaper = (p1->p_treeflag & P_TREE_REAPER) != 0 ?
+		    p1 : p1->p_reaper;
+		pptr = p1;
+	}
+	p2->p_pptr = pptr;
+	p2->p_oppid = pptr->p_pid;
+	LIST_INSERT_HEAD(&pptr->p_children, p2, p_sibling);
+	LIST_INIT(&p2->p_reaplist);
+	LIST_INSERT_HEAD(&p2->p_reaper->p_reaplist, p2, p_reapsibling);
+	if (p2->p_reaper == p1 && p1 != initproc) {
+		p2->p_reapsubtree = p2->p_pid;
+		proc_id_set_cond(PROC_ID_REAP, p2->p_pid);
+	} else {
+		/*
+		 * Explicitly copy this field under the proctree lock, as it
+		 * might have changed since the bulk copying of the parent's
+		 * fields.
+		 */
+		p2->p_reapsubtree = p1->p_reapsubtree;
+	}
+	sx_xunlock(&proctree_lock);
+
+	/* Inform accounting that we have forked. */
+	p2->p_acflag = AFORK;
+	PROC_UNLOCK(p2);
+}
+
 static int
 fork_norfproc(struct thread *td, int flags)
 {
@@ -430,7 +527,7 @@ static void
 do_fork(struct thread *td, struct fork_req *fr, struct proc *p2, struct thread *td2,
     struct vmspace *vm2, struct file *fp_procdesc)
 {
-	struct proc *p1, *pptr;
+	struct proc *p1;
 	struct filedesc *fd;
 	struct filedesc_to_leader *fdtol;
 	struct pwddesc *pd;
@@ -447,25 +544,8 @@ do_fork(struct thread *td, struct fork_req *fr, struct proc *p2, struct thread *
 	bzero(&p2->p_startzero,
 	    __rangeof(struct proc, p_startzero, p_endzero));
 
-	/* Tell the prison that we exist. */
-	prison_proc_hold(p2->p_ucred->cr_prison);
-
-	p2->p_state = PRS_NEW;		/* protect against others */
-	p2->p_pid = fork_findpid(fr->fr_flags);
-	AUDIT_ARG_PID(p2->p_pid);
+	fork_register_proc(p2, td2, fr->fr_flags);
 	TSFORK(p2->p_pid, p1->p_pid);
-
-	sx_xlock(&allproc_lock);
-	LIST_INSERT_HEAD(&allproc, p2, p_list);
-	allproc_gen++;
-	prison_proc_link(p2->p_ucred->cr_prison, p2);
-	sx_xunlock(&allproc_lock);
-
-	sx_xlock(PIDHASHLOCK(p2->p_pid));
-	LIST_INSERT_HEAD(PIDHASH(p2->p_pid), p2, p_hash);
-	sx_xunlock(PIDHASHLOCK(p2->p_pid));
-
-	tidhash_add(td2);
 
 	/*
 	 * Malloc things while we don't hold any locks.
@@ -692,52 +772,7 @@ do_fork(struct thread *td, struct fork_req *fr, struct proc *p2, struct thread *
 	if (fr->fr_flags & RFPPWAIT)
 		p2->p_flag |= P_PPWAIT;
 
-	p2->p_pgrp = p1->p_pgrp;
-	LIST_INSERT_AFTER(p1, p2, p_pglist);
-	PGRP_UNLOCK(p1->p_pgrp);
-	LIST_INIT(&p2->p_children);
-	LIST_INIT(&p2->p_orphans);
-
-	callout_init_mtx(&p2->p_itcallout, &p2->p_mtx, 0);
-
-	PROC_UNLOCK(p1);
-
-	/*
-	 * Attach the new process to its parent.
-	 *
-	 * If RFNOWAIT is set, the newly created process becomes a child
-	 * of init.  This effectively disassociates the child from the
-	 * parent.
-	 */
-	if ((fr->fr_flags & RFNOWAIT) != 0) {
-		pptr = p1->p_reaper;
-		p2->p_reaper = pptr;
-	} else {
-		p2->p_reaper = (p1->p_treeflag & P_TREE_REAPER) != 0 ?
-		    p1 : p1->p_reaper;
-		pptr = p1;
-	}
-	p2->p_pptr = pptr;
-	p2->p_oppid = pptr->p_pid;
-	LIST_INSERT_HEAD(&pptr->p_children, p2, p_sibling);
-	LIST_INIT(&p2->p_reaplist);
-	LIST_INSERT_HEAD(&p2->p_reaper->p_reaplist, p2, p_reapsibling);
-	if (p2->p_reaper == p1 && p1 != initproc) {
-		p2->p_reapsubtree = p2->p_pid;
-		proc_id_set_cond(PROC_ID_REAP, p2->p_pid);
-	} else {
-		/*
-		 * Explicitly copy this field under the proctree lock, as it
-		 * might have changed since the bulk copying of the parent's
-		 * fields.
-		 */
-		p2->p_reapsubtree = p1->p_reapsubtree;
-	}
-	sx_xunlock(&proctree_lock);
-
-	/* Inform accounting that we have forked. */
-	p2->p_acflag = AFORK;
-	PROC_UNLOCK(p2);
+	fork_proc_tree(p1, p2, (fr->fr_flags & RFNOWAIT) != 0);
 
 #ifdef KTRACE
 	ktrprocfork(p1, p2);
