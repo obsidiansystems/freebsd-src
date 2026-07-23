@@ -446,30 +446,25 @@ proc_vmspace_unref(struct thread *td, struct proc *p, int flags,
 	}
 }
 
+/*
+ * Copy to/from the pages of a vmspace, faulting them in with the
+ * protection requested by the caller.  Reads use VM_PROT_READ; writers
+ * choose between VM_PROT_COPY (a private copy, e.g. a debugger writing
+ * shared text) and VM_PROT_WRITE (a real, process-visible write, e.g.
+ * setting up a new process's stack).  Any privilege policy is the
+ * caller's responsibility.
+ */
 static int
-vmspace_rwmem(struct vmspace *vm, struct uio *uio)
+vmspace_rwmem(struct vmspace *vm, struct uio *uio, vm_prot_t reqprot)
 {
 	vm_map_t map;
 	vm_offset_t pageno;		/* page number */
-	vm_prot_t reqprot;
 	int error, fault_flags, page_offset, writing;
 
 	map = &vm->vm_map;
 
-	/*
-	 * If we are writing, then we request vm_fault() to create a private
-	 * copy of each page.  Since these copies will not be writeable by the
-	 * process, we must explicitly request that they be dirtied.
-	 */
 	writing = uio->uio_rw == UIO_WRITE;
-	reqprot = writing ? VM_PROT_COPY | VM_PROT_READ : VM_PROT_READ;
 	fault_flags = writing ? VM_FAULT_DIRTY : VM_FAULT_NORMAL;
-
-	if (writing) {
-		error = priv_check(curthread, PRIV_PROC_MEM_WRITE);
-		if (error != 0)
-			goto out;
-	}
 
 	/*
 	 * Only map in one page at a time.  We don't have to, but it
@@ -526,7 +521,6 @@ vmspace_rwmem(struct vmspace *vm, struct uio *uio)
 
 	} while (error == 0 && uio->uio_resid > 0);
 
-out:
 	return (error);
 }
 
@@ -538,17 +532,27 @@ proc_rwmem(struct proc *p, struct uio *uio, int flags)
 	int error;
 
 	td = curthread;
+	/*
+	 * Debugger-style access: a write goes to a private copy of the
+	 * page (VM_PROT_COPY) and requires the memory-write privilege.
+	 */
+	if (uio->uio_rw == UIO_WRITE) {
+		error = priv_check(td, PRIV_PROC_MEM_WRITE);
+		if (error != 0)
+			return (error);
+	}
 	error = proc_vmspace_ref(td, p, flags, &vm);
 	if (error != 0)
 		return (error);
-	error = vmspace_rwmem(vm, uio);
+	error = vmspace_rwmem(vm, uio, uio->uio_rw == UIO_WRITE ?
+	    VM_PROT_COPY | VM_PROT_READ : VM_PROT_READ);
 	proc_vmspace_unref(td, p, flags, vm);
 	return (error);
 }
 
 ssize_t
 vmspace_iop(struct thread *td, struct vmspace *vm, vm_offset_t va, void *buf,
-    size_t len, enum uio_rw rw)
+    size_t len, enum uio_rw rw, vm_prot_t reqprot)
 {
 	struct iovec iov;
 	struct uio uio;
@@ -567,7 +571,7 @@ vmspace_iop(struct thread *td, struct vmspace *vm, vm_offset_t va, void *buf,
 	uio.uio_segflg = UIO_SYSSPACE;
 	uio.uio_rw = rw;
 	uio.uio_td = td;
-	error = vmspace_rwmem(vm, &uio);
+	error = vmspace_rwmem(vm, &uio, reqprot);
 	if (error != 0 || uio.uio_resid == slen)
 		return (-1);
 	return (slen - uio.uio_resid);
@@ -578,15 +582,28 @@ proc_readmem(struct thread *td, struct proc *p, vm_offset_t va, void *buf,
     size_t len)
 {
 
-	return (vmspace_iop(td, p->p_vmspace, va, buf, len, UIO_READ));
+	return (vmspace_iop(td, p->p_vmspace, va, buf, len, UIO_READ,
+	    VM_PROT_READ));
 }
 
 ssize_t
 proc_writemem(struct thread *td, struct proc *p, vm_offset_t va, void *buf,
     size_t len)
 {
+	int error;
 
-	return (vmspace_iop(td, p->p_vmspace, va, buf, len, UIO_WRITE));
+	/*
+	 * Debugger-style write: private copy, memory-write privilege.
+	 * The privilege is the acting thread's, which is always curthread
+	 * (priv_check() asserts as much); td is merely the fault context
+	 * passed to vmspace_iop() and may be the target thread (e.g. arm
+	 * ptrace single-step calls proc_writemem() on the traced thread).
+	 */
+	error = priv_check(curthread, PRIV_PROC_MEM_WRITE);
+	if (error != 0)
+		return (-1);
+	return (vmspace_iop(td, p->p_vmspace, va, buf, len, UIO_WRITE,
+	    VM_PROT_COPY | VM_PROT_READ));
 }
 
 static int

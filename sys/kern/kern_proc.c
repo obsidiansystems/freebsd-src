@@ -1848,7 +1848,7 @@ proc_read_string(struct thread *td, struct vmspace *vm, const char *sptr,
 	 * and is aligned at the end of the page, and the following page is not
 	 * mapped.
 	 */
-	n = vmspace_iop(td, vm, (vm_offset_t)sptr, buf, len, UIO_READ);
+	n = vmspace_iop(td, vm, (vm_offset_t)sptr, buf, len, UIO_READ, VM_PROT_READ);
 	if (n <= 0)
 		return (ENOMEM);
 	return (0);
@@ -1877,7 +1877,7 @@ get_proc_vector32(struct thread *td, struct proc *p, struct vmspace *vm,
 
 	error = 0;
 	if (vmspace_iop(td, vm, PROC_PS_STRINGS(p), &pss, sizeof(pss),
-	    UIO_READ) != sizeof(pss))
+	    UIO_READ, VM_PROT_READ) != sizeof(pss))
 		return (ENOMEM);
 	switch (type) {
 	case PROC_ARG:
@@ -1901,7 +1901,7 @@ get_proc_vector32(struct thread *td, struct proc *p, struct vmspace *vm,
 			return (ENOEXEC);
 		for (ptr = vptr, i = 0; i < PROC_AUXV_MAX; i++) {
 			if (vmspace_iop(td, vm, ptr, &aux, sizeof(aux),
-			    UIO_READ) != sizeof(aux))
+			    UIO_READ, VM_PROT_READ) != sizeof(aux))
 				return (ENOMEM);
 			if (aux.a_type == AT_NULL)
 				break;
@@ -1917,7 +1917,7 @@ get_proc_vector32(struct thread *td, struct proc *p, struct vmspace *vm,
 		return (EINVAL);
 	}
 	proc_vector32 = malloc(size, M_TEMP, M_WAITOK);
-	if (vmspace_iop(td, vm, vptr, proc_vector32, size, UIO_READ) != size) {
+	if (vmspace_iop(td, vm, vptr, proc_vector32, size, UIO_READ, VM_PROT_READ) != size) {
 		error = ENOMEM;
 		goto done;
 	}
@@ -1955,7 +1955,7 @@ get_proc_vector(struct thread *td, struct proc *p, struct vmspace *vm,
 	}
 #endif
 	if (vmspace_iop(td, vm, PROC_PS_STRINGS(p), &pss, sizeof(pss),
-	    UIO_READ) != sizeof(pss))
+	    UIO_READ, VM_PROT_READ) != sizeof(pss))
 		return (ENOMEM);
 	switch (type) {
 	case PROC_ARG:
@@ -1994,7 +1994,7 @@ get_proc_vector(struct thread *td, struct proc *p, struct vmspace *vm,
 		 */
 		for (ptr = vptr, i = 0; i < PROC_AUXV_MAX; i++) {
 			if (vmspace_iop(td, vm, ptr, &aux, sizeof(aux),
-			    UIO_READ) != sizeof(aux))
+			    UIO_READ, VM_PROT_READ) != sizeof(aux))
 				return (ENOMEM);
 			if (aux.a_type == AT_NULL)
 				break;
@@ -2016,7 +2016,7 @@ get_proc_vector(struct thread *td, struct proc *p, struct vmspace *vm,
 		return (EINVAL); /* In case we are built without INVARIANTS. */
 	}
 	proc_vector = malloc(size, M_TEMP, M_WAITOK);
-	if (vmspace_iop(td, vm, vptr, proc_vector, size, UIO_READ) != size) {
+	if (vmspace_iop(td, vm, vptr, proc_vector, size, UIO_READ, VM_PROT_READ) != size) {
 		free(proc_vector, M_TEMP);
 		return (ENOMEM);
 	}
