@@ -1181,6 +1181,8 @@ int	enterpgrp(struct proc *p, pid_t pgid, struct pgrp *pgrp,
 	    struct session *sess);
 int	enterthispgrp(struct proc *p, struct pgrp *pgrp);
 int	fork1(struct thread *, struct fork_req *);
+int	fork_alloc_proc(struct thread *, int, struct proc **,
+	    struct thread **);
 void	fork_register_proc(struct proc *, struct thread *, int);
 void	fork_proc_tree(struct proc *, struct proc *, bool);
 void	fork_exit(void (*)(void *, struct trapframe *), void *,

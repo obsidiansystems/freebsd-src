@@ -365,6 +365,131 @@ retry:
 }
 
 /*
+ * Allocate a new process structure with thread, credentials, resource
+ * accounting, and MAC label.  On success, the returned proc has:
+ *   - p_ucred set (cow ref of td's cred)
+ *   - RACCT initialized
+ *   - MAC initialized
+ *   - uid proc count incremented
+ *   - p_klist allocated
+ *   - a linked thread with kernel stack
+ *
+ * On failure, all partial allocations are cleaned up.
+ * nprocs is incremented on entry and decremented on failure.
+ */
+int
+fork_alloc_proc(struct thread *td, int pages, struct proc **procp,
+    struct thread **tdp)
+{
+	struct proc *p1, *newproc;
+	struct thread *td2;
+	struct ucred *cred;
+	int error, nprocs_new;
+	static int curfail;
+	static struct timeval lastfail;
+
+	p1 = td->td_proc;
+	newproc = NULL;
+
+	/*
+	 * Increment the nprocs resource before allocations occur.
+	 * Although process entries are dynamically created, we still
+	 * keep a global limit on the maximum number we will
+	 * create. There are hard-limits as to the number of processes
+	 * that can run, established by the KVA and memory usage for
+	 * the process data.
+	 *
+	 * Don't allow a nonprivileged user to use the last ten
+	 * processes; don't let root exceed the limit.
+	 */
+	nprocs_new = atomic_fetchadd_int(&nprocs, 1) + 1;
+	if (nprocs_new >= maxproc - 10) {
+		if (priv_check_cred(td->td_ucred, PRIV_MAXPROC) != 0 ||
+		    nprocs_new >= maxproc) {
+			error = EAGAIN;
+			sx_xlock(&allproc_lock);
+			if (ppsratecheck(&lastfail, &curfail, 1)) {
+				printf("maxproc limit exceeded by uid %u "
+				    "(pid %d); see tuning(7) and "
+				    "login.conf(5)\n",
+				    td->td_ucred->cr_ruid, p1->p_pid);
+			}
+			sx_xunlock(&allproc_lock);
+			goto fail2;
+		}
+	}
+
+	if (pages == 0)
+		pages = kstack_pages;
+	/* Allocate new proc. */
+	newproc = uma_zalloc(proc_zone, M_WAITOK);
+	PROC_TREE_REF(newproc);
+	td2 = FIRST_THREAD_IN_PROC(newproc);
+	if (td2 == NULL) {
+		td2 = thread_alloc(pages);
+		if (td2 == NULL) {
+			error = ENOMEM;
+			goto fail2;
+		}
+		proc_linkup(newproc, td2);
+	} else {
+		error = thread_recycle(td2, pages);
+		if (error != 0)
+			goto fail2;
+	}
+
+	/*
+	 * XXX: This is ugly; when we copy resource usage, we need to bump
+	 *      per-cred resource counters.
+	 */
+	newproc->p_ucred = crcowget(td->td_ucred);
+
+	/*
+	 * Initialize resource accounting for the child process.
+	 */
+	error = racct_proc_fork(p1, newproc);
+	if (error != 0) {
+		error = EAGAIN;
+		goto fail1;
+	}
+
+#ifdef MAC
+	mac_proc_init(newproc);
+#endif
+
+	/*
+	 * Increment the count of procs running with this uid. Don't allow
+	 * a nonprivileged user to exceed their current limit.
+	 */
+	cred = td->td_ucred;
+	if (!chgproccnt(cred->cr_ruidinfo, 1, lim_cur(td, RLIMIT_NPROC))) {
+		if (priv_check_cred(cred, PRIV_PROC_LIMIT) != 0)
+			goto fail0;
+		chgproccnt(cred->cr_ruidinfo, 1, 0);
+	}
+
+	newproc->p_klist = knlist_alloc(&newproc->p_mtx);
+
+	*procp = newproc;
+	*tdp = td2;
+	return (0);
+
+fail0:
+	error = EAGAIN;
+#ifdef MAC
+	mac_proc_destroy(newproc);
+#endif
+	racct_proc_exit(newproc);
+fail1:
+	proc_unset_cred(newproc, false);
+fail2:
+	if (newproc != NULL)
+		PROC_TREE_UNREF(newproc);
+	atomic_add_int(&nprocs, -1);
+	return (error);
+}
+
+/*
  * Assign a PID and register the process in the global process lists
  * (allproc, pidhash, tidhash) and prison.  The process must be in
  * PRS_NEW on entry.
@@ -968,13 +1093,10 @@ fork1(struct thread *td, struct fork_req *fr)
 	struct proc *p1, *newproc;
 	struct thread *td2;
 	struct vmspace *vm2;
-	struct ucred *cred;
 	struct file *fp_procdesc;
 	struct pgrp *pg;
 	vm_ooffset_t mem_charged;
-	int error, nprocs_new;
-	static int curfail;
-	static struct timeval lastfail;
+	int error;
 	int flags, pages;
 	bool killsx_locked, singlethreaded;
 
@@ -1035,34 +1157,6 @@ fork1(struct thread *td, struct fork_req *fr)
 	singlethreaded = false;
 
 	/*
-	 * Increment the nprocs resource before allocations occur.
-	 * Although process entries are dynamically created, we still
-	 * keep a global limit on the maximum number we will
-	 * create. There are hard-limits as to the number of processes
-	 * that can run, established by the KVA and memory usage for
-	 * the process data.
-	 *
-	 * Don't allow a nonprivileged user to use the last ten
-	 * processes; don't let root exceed the limit.
-	 */
-	nprocs_new = atomic_fetchadd_int(&nprocs, 1) + 1;
-	if (nprocs_new >= maxproc - 10) {
-		if (priv_check_cred(td->td_ucred, PRIV_MAXPROC) != 0 ||
-		    nprocs_new >= maxproc) {
-			error = EAGAIN;
-			sx_xlock(&allproc_lock);
-			if (ppsratecheck(&lastfail, &curfail, 1)) {
-				printf("maxproc limit exceeded by uid %u "
-				    "(pid %d); see tuning(7) and "
-				    "login.conf(5)\n",
-				    td->td_ucred->cr_ruid, p1->p_pid);
-			}
-			sx_xunlock(&allproc_lock);
-			goto fail2;
-		}
-	}
-
-	/*
 	 * If we are possibly multi-threaded, and there is a process
 	 * sending a signal to our group right now, ensure that our
 	 * other threads cannot be chosen for the signal queueing.
@@ -1078,7 +1172,7 @@ fork1(struct thread *td, struct fork_req *fr)
 			if (thread_single(p1, SINGLE_BOUNDARY)) {
 				PROC_UNLOCK(p1);
 				error = ERESTART;
-				goto fail2;
+				goto cleanup;
 			}
 			PROC_UNLOCK(p1);
 			singlethreaded = true;
@@ -1091,7 +1185,7 @@ fork1(struct thread *td, struct fork_req *fr)
 	 */
 	if (!killsx_locked && sx_slock_sig(&pg->pg_killsx) != 0) {
 		error = ERESTART;
-		goto fail2;
+		goto cleanup;
 	}
 	if (__predict_false(p1->p_pgrp != pg || sig_intr() != 0)) {
 		/*
@@ -1103,7 +1197,7 @@ fork1(struct thread *td, struct fork_req *fr)
 		sx_sunlock(&pg->pg_killsx);
 		killsx_locked = false;
 		error = ERESTART;
-		goto fail2;
+		goto cleanup;
 	} else {
 		killsx_locked = true;
 	}
@@ -1118,36 +1212,25 @@ fork1(struct thread *td, struct fork_req *fr)
 		    fr->fr_pd_flags, fr->fr_pd_fcaps);
 		if (error != 0) {
 			filecaps_free(fr->fr_pd_fcaps);
-			goto fail2;
+			goto cleanup;
 		}
 		AUDIT_ARG_FD(*fr->fr_pd_fd);
 	}
 
 	mem_charged = 0;
-	if (pages == 0)
-		pages = kstack_pages;
-	/* Allocate new proc. */
-	newproc = uma_zalloc(proc_zone, M_WAITOK);
-	PROC_TREE_REF(newproc);
-	td2 = FIRST_THREAD_IN_PROC(newproc);
-	if (td2 == NULL) {
-		td2 = thread_alloc(pages);
-		if (td2 == NULL) {
-			error = ENOMEM;
-			goto fail2;
-		}
-		proc_linkup(newproc, td2);
-	} else {
-		error = thread_recycle(td2, pages);
-		if (error != 0)
-			goto fail2;
-	}
+	/*
+	 * Allocate proc structure, thread, credentials, and resource
+	 * accounting.
+	 */
+	error = fork_alloc_proc(td, pages, &newproc, &td2);
+	if (error != 0)
+		goto fail_procdesc;
 
 	if ((flags & RFMEM) == 0) {
 		vm2 = vmspace_fork(p1->p_vmspace, &mem_charged);
 		if (vm2 == NULL) {
 			error = ENOMEM;
-			goto fail2;
+			goto fail_proc;
 		}
 		if (!swap_reserve(mem_charged)) {
 			/*
@@ -1158,64 +1241,34 @@ fork1(struct thread *td, struct fork_req *fr)
 			 */
 			swap_reserve_force(mem_charged);
 			error = ENOMEM;
-			goto fail2;
+			goto fail_proc;
 		}
 	} else
 		vm2 = NULL;
 
-	/*
-	 * XXX: This is ugly; when we copy resource usage, we need to bump
-	 *      per-cred resource counters.
-	 */
-	newproc->p_ucred = crcowget(td->td_ucred);
-
-	/*
-	 * Initialize resource accounting for the child process.
-	 */
-	error = racct_proc_fork(p1, newproc);
-	if (error != 0) {
-		error = EAGAIN;
-		goto fail1;
-	}
-
-#ifdef MAC
-	mac_proc_init(newproc);
-#endif
-
-	/*
-	 * Increment the count of procs running with this uid. Don't allow
-	 * a nonprivileged user to exceed their current limit.
-	 */
-	cred = td->td_ucred;
-	if (!chgproccnt(cred->cr_ruidinfo, 1, lim_cur(td, RLIMIT_NPROC))) {
-		if (priv_check_cred(cred, PRIV_PROC_LIMIT) != 0)
-			goto fail0;
-		chgproccnt(cred->cr_ruidinfo, 1, 0);
-	}
-
-	newproc->p_klist = knlist_alloc(&newproc->p_mtx);
-
 	do_fork(td, fr, newproc, td2, vm2, fp_procdesc);
 	error = 0;
 	goto cleanup;
-fail0:
-	error = EAGAIN;
+fail_proc:
+	if (vm2 != NULL)
+		vmspace_free(vm2);
+	/* fork_alloc_proc succeeded, so undo it in reverse. */
+	PROC_LOCK(newproc);
+	knlist_detach(newproc->p_klist);
+	newproc->p_klist = NULL;
+	PROC_UNLOCK(newproc);
 #ifdef MAC
 	mac_proc_destroy(newproc);
 #endif
 	racct_proc_exit(newproc);
-fail1:
-	proc_unset_cred(newproc, false);
-fail2:
-	if (vm2 != NULL)
-		vmspace_free(vm2);
-	if (newproc != NULL)
-		PROC_TREE_UNREF(newproc);
+	proc_unset_cred(newproc, true);
+	PROC_TREE_UNREF(newproc);
+	atomic_add_int(&nprocs, -1);
+fail_procdesc:
 	if ((flags & RFPROCDESC) != 0 && fp_procdesc != NULL) {
 		fdclose(td, fp_procdesc, *fr->fr_pd_fd);
 		fdrop(fp_procdesc, td);
 	}
-	atomic_add_int(&nprocs, -1);
 cleanup:
 	if (killsx_locked)
 		sx_sunlock(&pg->pg_killsx);
