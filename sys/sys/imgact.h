@@ -99,9 +99,15 @@ struct image_params {
 };
 
 #ifdef _KERNEL
+struct label;
+struct nameidata;
+struct pargs;
 struct sysentvec;
 struct thread;
+struct uidinfo;
+struct vattr;
 struct vmspace;
+struct vnode;
 
 int	exec_alloc_args(struct image_args *);
 int	exec_args_add_arg(struct image_args *args, const char *argp,
@@ -114,9 +120,39 @@ int	exec_args_adjust_args(struct image_args *args, size_t consume,
 	    ssize_t extend);
 char	*exec_args_get_begin_envv(struct image_args *args);
 int	exec_check_permissions(struct image_params *);
+int	exec_fgetvp(struct image_params *, struct thread *, int,
+	    struct vnode **);
+int	exec_prepare_image(struct image_params *);
+void	exec_set_comm(struct image_params *, const char *, int);
 void	exec_cleanup(struct thread *td, struct vmspace *);
+void	exec_cleanup_imgp(struct image_params *, struct thread *, int);
+void	exec_cleanup_cred(struct image_params *, struct ucred *,
+#ifdef MAC
+	    struct label *,
+#endif
+	    struct image_args *, struct pargs *, struct uidinfo *);
 int	exec_copyout_strings(struct image_params *, uintptr_t *);
+int	exec_copyout_stack(struct image_params *, uintptr_t *);
+struct pargs *exec_cache_args(struct image_args *);
+int	exec_activate(struct image_params *, struct ucred *,
+	    struct vattr *, struct uidinfo **, bool *
+#ifdef MAC
+	    , struct label *, bool *
+#endif
+	    );
+void	exec_install_setid(struct image_params *, struct thread *,
+	    struct ucred *);
+void	exec_finalize(struct image_params *, struct vnode *,
+	    char **, struct pargs **, uintptr_t);
 void	exec_free_args(struct image_args *);
+void	exec_interpreter_cleanup(struct image_params *, struct thread *
+#ifdef MAC
+	    , struct label **
+#endif
+	    );
+void	exec_interpreter_vp(struct image_params *, struct vnode **);
+int	exec_interpreter_namei(struct image_params *, struct thread *,
+	    struct nameidata *, struct vnode **, struct vnode **, char **);
 int	exec_map_stack(struct image_params *);
 int	exec_new_vmspace(struct image_params *, struct sysentvec *);
 void	exec_setregs(struct thread *, struct image_params *, uintptr_t);
