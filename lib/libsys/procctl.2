@@ -27,7 +27,7 @@
 .\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 .\" SUCH DAMAGE.
 .\"
-.Dd April 21, 2025
+.Dd August 6, 2026
 .Dt PROCCTL 2
 .Os
 .Sh NAME
@@ -65,7 +65,21 @@ zero is a shortcut for the calling process ID.
 .It Dv P_PGID
 Control processes belonging to the process group with the ID
 .Fa id .
+.It Dv P_PROCDESC
+Control the process referenced by the process descriptor
+.Fa id .
+The descriptor is required to have the
+.Dv CAP_PROCCTL
+right.
 .El
+.Pp
+Unlike the other identifier types, which name processes by numbers in a
+global namespace,
+.Dv P_PROCDESC
+names a process by a descriptor the caller already holds.
+It is therefore the only identifier type accepted in capability mode;
+see
+.Xr cap_enter 2 .
 .Pp
 The control request to perform is specified by the
 .Fa cmd
@@ -854,14 +868,49 @@ argument specifies an unsupported command.
 The
 .Fa idtype
 argument specifies an unsupported identifier type.
+.Pp
+The
+.Fa idtype
+argument is
+.Dv P_PROCDESC
+and
+.Fa id
+is a descriptor of a type other than a process descriptor.
 .It Bq Er EPERM
 The calling process does not have permission to perform the requested
 operation on any of the selected processes.
+.It Bq Er ECAPMODE
+The calling process is in capability mode and the
+.Fa idtype
+argument is not
+.Dv P_PROCDESC .
+.It Bq Er EBADF
+The
+.Fa idtype
+argument is
+.Dv P_PROCDESC
+and
+.Fa id
+is not a valid descriptor.
+.It Bq Er ENOTCAPABLE
+The
+.Fa idtype
+argument is
+.Dv P_PROCDESC
+and
+.Fa id
+lacks the
+.Dv CAP_PROCCTL
+right.
 .It Bq Er ESRCH
 No processes matched the requested
 .Fa idtype
 and
 .Fa id .
+A
+.Dv P_PROCDESC
+descriptor also stops matching once the process it referenced has exited and
+been reaped.
 .It Bq Er ESRCH
 No descendant processes can be found matching criteria specified in the
 .Dv PROC_REAP_KILL
@@ -944,6 +993,7 @@ or invalid signal number.
 .Xr ktrace 2 ,
 .Xr mmap 2 ,
 .Xr mprotect 2 ,
+.Xr pdfork 2 ,
 .Xr ptrace 2 ,
 .Xr wait 2 ,
 .Xr capsicum 4 ,

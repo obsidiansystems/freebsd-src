@@ -118,7 +118,14 @@ typedef enum
 	P_JAILID,		/* A zone identifier. */
 	P_CTID,			/* A (process) contract identifier. */
 	P_CPUID,		/* CPU identifier. */
-	P_PSETID		/* Processor set identifier. */
+	P_PSETID,		/* Processor set identifier. */
+	/*
+	 * A process descriptor.  Unlike the identifiers above this names a
+	 * process by a descriptor the caller holds rather than by a number
+	 * in a global namespace, so it remains usable in capability mode.
+	 * FreeBSD extension; beyond the range shared with Solaris.
+	 */
+	P_PROCDESC
 } idtype_t;			/* The type of id_t we are using. */
 
 #if __BSD_VISIBLE

@@ -33,6 +33,9 @@
 #include <sys/_unrhdr.h>
 #include <sys/systm.h>
 #include <sys/capsicum.h>
+#include <sys/file.h>
+#include <sys/filedesc.h>
+#include <sys/procdesc.h>
 #include <sys/lock.h>
 #include <sys/malloc.h>
 #include <sys/mman.h>
@@ -1180,6 +1183,14 @@ sys_procctl(struct thread *td, struct procctl_args *uap)
 	const struct procctl_cmd_info *cmd_info;
 	int error, error1;
 
+	/*
+	 * In capability mode only P_PROCDESC is available: the other identifier
+	 * types name a process through a global namespace the sandbox is not
+	 * supposed to be able to reach into.
+	 */
+	if (IN_CAPABILITY_MODE(td) && uap->idtype != P_PROCDESC)
+		return (ECAPMODE);
+
 	if (uap->com >= PROC_PROCCTL_MD_MIN)
 		return (cpu_procctl(td, uap->idtype, uap->id,
 		    uap->com, uap->data));
@@ -1221,6 +1232,29 @@ kern_procctl_single(struct thread *td, struct proc *p, int com, void *data)
 	return (error);
 }
 
+/*
+ * Common tail for the idtypes that name exactly one process: check that the
+ * caller may act on it, then run the command.  Called with the process
+ * locked, and returns it unlocked.
+ *
+ * Callers acting on the calling process itself need no special case: both
+ * p_cansee() and p_candebug() return success immediately when the target is
+ * the caller's own process.
+ */
+static int
+kern_procctl_found(struct thread *td, struct proc *p,
+    const struct procctl_cmd_info *cmd_info, int com, void *data)
+{
+	int error;
+
+	PROC_LOCK_ASSERT(p, MA_OWNED);
+	error = cmd_info->need_candebug ? p_candebug(td, p) : p_cansee(td, p);
+	if (error == 0)
+		error = kern_procctl_single(td, p, com, data);
+	PROC_UNLOCK(p);
+	return (error);
+}
+
 int
 kern_procctl(struct thread *td, idtype_t idtype, id_t id, int com, void *data)
 {
@@ -1232,7 +1266,8 @@ kern_procctl(struct thread *td, idtype_t idtype, id_t id, int com, void *data)
 
 	MPASS(com > 0 && com < nitems(procctl_cmds_info));
 	cmd_info = &procctl_cmds_info[com];
-	if (idtype != P_PID && cmd_info->one_proc)
+	/* P_PROCDESC, like P_PID, names exactly one process. */
+	if (idtype != P_PID && idtype != P_PROCDESC && cmd_info->one_proc)
 		return (EINVAL);
 
 	sapblk = false;
@@ -1257,7 +1292,6 @@ kern_procctl(struct thread *td, idtype_t idtype, id_t id, int com, void *data)
 	case P_PID:
 		if (id == 0) {
 			p = td->td_proc;
-			error = 0;
 			PROC_LOCK(p);
 		} else {
 			p = pfind(id);
@@ -1266,13 +1300,41 @@ kern_procctl(struct thread *td, idtype_t idtype, id_t id, int com, void *data)
 				    EINVAL : ESRCH;
 				break;
 			}
-			error = cmd_info->need_candebug ? p_candebug(td, p) :
-			    p_cansee(td, p);
+		}
+		error = kern_procctl_found(td, p, cmd_info, com, data);
+		break;
+	case P_PROCDESC: {
+		/*
+		 * Name the process by a descriptor rather than a pid, so that
+		 * the operation stays available in capability mode.
+		 *
+		 * fget_procdesc() requires proctree_lock, which the command
+		 * may already have taken, and returns the process locked.  It
+		 * hands back a reference on the file -- on some error paths as
+		 * well as on success -- and that reference is what keeps the
+		 * process from going away, so it is dropped only once the
+		 * command has run.  proctree_lock, in contrast, is needed only
+		 * for the lookup itself.
+		 */
+		struct file *fp;
+
+		{
+			bool slock;
+
+			slock = cmd_info->lock_tree == PCTL_UNLOCKED;
+			if (slock)
+				sx_slock(&proctree_lock);
+			error = fget_procdesc(td, (int)id,
+			    &cap_procctl_rights, EINVAL, &fp, NULL, &p);
+			if (slock)
+				sx_sunlock(&proctree_lock);
 		}
 		if (error == 0)
-			error = kern_procctl_single(td, p, com, data);
-		PROC_UNLOCK(p);
+			error = kern_procctl_found(td, p, cmd_info, com, data);
+		if (fp != NULL)
+			fdrop(fp, td);
 		break;
+	}
 	case P_PGID:
 		/*
 		 * Attempt to apply the operation to all members of the
