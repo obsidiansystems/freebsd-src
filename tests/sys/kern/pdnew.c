@@ -387,6 +387,132 @@ ATF_TC_BODY(shebang, tc)
 	close(procfd);
 	unlink(scriptpath);
 }
+/*
+ * pdsetfd(2) works on either side of pdexec(2).
+ *
+ * The descriptor table belongs to the process, not to the program, so
+ * installing a descriptor before the image is loaded must be as good as
+ * installing it after.  Set up stdout before pdexec(2) and stderr after,
+ * then have the child write to both.
+ */
+ATF_TC_WITHOUT_HEAD(setfd_before_and_after_exec);
+ATF_TC_BODY(setfd_before_and_after_exec, tc)
+{
+	char *argv[] = { __DECONST(char *, "sh"), __DECONST(char *, "-c"),
+	    __DECONST(char *, "echo out; echo err 1>&2"), NULL };
+	char *envv[] = { NULL };
+	char buf[64];
+	int error, execfd, procfd, opipe[2], epipe[2], status;
+	ssize_t n;
+	pid_t pid;
+
+	ATF_REQUIRE(pipe(opipe) == 0);
+	ATF_REQUIRE(pipe(epipe) == 0);
+	execfd = open_exec("/bin/sh");
+
+	pid = pdrfork(&procfd, 0, RFEMBRYO);
+	ATF_REQUIRE_MSG(pid > 0, "pdrfork(RFEMBRYO): %s", strerror(errno));
+
+	/* Before the image is loaded. */
+	error = pdsetfd(procfd, STDOUT_FILENO, opipe[1]);
+	ATF_REQUIRE_MSG(error == 0, "pdsetfd before pdexec: %s",
+	    strerror(errno));
+
+	error = pdexec(procfd, execfd, argv, envv, PD_NOSTART);
+	ATF_REQUIRE_MSG(error == 0, "pdexec: %s", strerror(errno));
+	close(execfd);
+
+	/* After the image is loaded. */
+	error = pdsetfd(procfd, STDERR_FILENO, epipe[1]);
+	ATF_REQUIRE_MSG(error == 0, "pdsetfd after pdexec: %s",
+	    strerror(errno));
+
+	close(opipe[1]);
+	close(epipe[1]);
+
+	error = pdstart(procfd);
+	ATF_REQUIRE_MSG(error == 0, "pdstart: %s", strerror(errno));
+
+	n = read(opipe[0], buf, sizeof(buf) - 1);
+	ATF_REQUIRE_MSG(n > 0, "read stdout: %s", strerror(errno));
+	buf[n] = '\0';
+	ATF_REQUIRE_MSG(strcmp(buf, "out\n") == 0, "stdout was \"%s\"", buf);
+
+	n = read(epipe[0], buf, sizeof(buf) - 1);
+	ATF_REQUIRE_MSG(n > 0, "read stderr: %s", strerror(errno));
+	buf[n] = '\0';
+	ATF_REQUIRE_MSG(strcmp(buf, "err\n") == 0, "stderr was \"%s\"", buf);
+
+	error = pdwait(procfd, &status, WEXITED, NULL, NULL);
+	ATF_REQUIRE_MSG(error == 0, "pdwait: %s", strerror(errno));
+	ATF_REQUIRE_MSG(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+	    "unexpected exit status: %#x", status);
+
+	close(opipe[0]);
+	close(epipe[0]);
+	close(procfd);
+}
+
+/*
+ * pdexec(2) without PD_NOSTART loads the program and runs it, with no
+ * pdstart(2) needed.
+ */
+ATF_TC_WITHOUT_HEAD(exec_starts);
+ATF_TC_BODY(exec_starts, tc)
+{
+	char *argv[] = { __DECONST(char *, "true"), NULL };
+	char *envv[] = { NULL };
+	int error, execfd, procfd, status;
+	pid_t pid;
+
+	execfd = open_exec("/usr/bin/true");
+
+	pid = pdrfork(&procfd, 0, RFEMBRYO);
+	ATF_REQUIRE_MSG(pid > 0, "pdrfork(RFEMBRYO): %s", strerror(errno));
+
+	error = pdexec(procfd, execfd, argv, envv, 0);
+	ATF_REQUIRE_MSG(error == 0, "pdexec: %s", strerror(errno));
+	close(execfd);
+
+	error = pdwait(procfd, &status, WEXITED, NULL, NULL);
+	ATF_REQUIRE_MSG(error == 0, "pdwait: %s", strerror(errno));
+	ATF_REQUIRE_MSG(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+	    "unexpected exit status: %#x", status);
+
+	close(procfd);
+}
+
+/*
+ * A process started by pdexec(2) is no longer an embryo, so pdstart(2)
+ * must refuse it rather than trying to release it twice.
+ */
+ATF_TC_WITHOUT_HEAD(exec_starts_then_pdstart_fails);
+ATF_TC_BODY(exec_starts_then_pdstart_fails, tc)
+{
+	char *argv[] = { __DECONST(char *, "sleep"),
+	    __DECONST(char *, "10"), NULL };
+	char *envv[] = { NULL };
+	int error, execfd, procfd;
+	pid_t pid;
+
+	execfd = open_exec("/bin/sleep");
+
+	pid = pdrfork(&procfd, 0, RFEMBRYO);
+	ATF_REQUIRE_MSG(pid > 0, "pdrfork(RFEMBRYO): %s", strerror(errno));
+
+	error = pdexec(procfd, execfd, argv, envv, 0);
+	ATF_REQUIRE_MSG(error == 0, "pdexec: %s", strerror(errno));
+	close(execfd);
+
+	error = pdstart(procfd);
+	ATF_REQUIRE_MSG(error == -1, "pdstart should have failed");
+	ATF_REQUIRE_MSG(errno == EINVAL,
+	    "unexpected errno: %d (%s)", errno, strerror(errno));
+
+	/* Closing the descriptor kills the running process. */
+	close(procfd);
+}
+
 
 ATF_TP_ADD_TCS(tp)
 {
@@ -400,6 +526,9 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, close_before_exec);
 	ATF_TP_ADD_TC(tp, setfd_replace);
 	ATF_TP_ADD_TC(tp, shebang);
+	ATF_TP_ADD_TC(tp, setfd_before_and_after_exec);
+	ATF_TP_ADD_TC(tp, exec_starts);
+	ATF_TP_ADD_TC(tp, exec_starts_then_pdstart_fails);
 
 	return (atf_no_error());
 }
