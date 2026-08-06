@@ -3660,6 +3660,13 @@ systrace_args(int sysnum, void *params, uint64_t *uarg, int *n_args)
 		*n_args = 1;
 		break;
 	}
+	/* pdstart */
+	case 615: {
+		struct pdstart_args *p = params;
+		iarg[a++] = p->procfd; /* int */
+		*n_args = 1;
+		break;
+	}
 	default:
 		*n_args = 0;
 		break;
@@ -9803,6 +9810,16 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 			break;
 		};
 		break;
+	/* pdstart */
+	case 615:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		default:
+			break;
+		};
+		break;
 	default:
 		break;
 	};
@@ -11888,6 +11905,11 @@ systrace_return_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 		break;
 	/* pdresetids */
 	case 614:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* pdstart */
+	case 615:
 		if (ndx == 0 || ndx == 1)
 			p = "int";
 		break;

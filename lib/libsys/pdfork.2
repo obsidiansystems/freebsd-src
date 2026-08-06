@@ -36,6 +36,7 @@
 .Sh NAME
 .Nm pdfork ,
 .Nm pdrfork ,
+.Nm pdexec ,
 .Nm pdopenpid ,
 .Nm pdgetpid ,
 .Nm pdkill ,
@@ -50,7 +51,8 @@
 .Nm pdsetpgid ,
 .Nm pdsetschedparam ,
 .Nm pdsetscheduler ,
-.Nm pdresetids
+.Nm pdresetids ,
+.Nm pdstart
 .Nd System calls to manage process descriptors
 .Sh LIBRARY
 .Lb libc
@@ -97,6 +99,8 @@
 .Fn pdsetscheduler "int fd" "int policy" "const struct sched_param *param"
 .Ft int
 .Fn pdresetids "int fd"
+.Ft int
+.Fn pdstart "int fd"
 .Sh DESCRIPTION
 Process descriptors are special file descriptors that represent processes,
 and are created using
@@ -231,15 +235,34 @@ kqueues.
 .Ss Creating a process without fork
 The
 .Fn pdrfork
+function with the
+.Dv RFEMBRYO
+flag, together with the
+.Fn pdexec ,
+.Fn pdsetfd ,
+and
+.Fn pdstart
+functions, creates a new process without using
+.Xr fork 2 .
+Unlike the traditional
+.Fn fork Ns / Ns Fn execve
+pattern, the new process is never a copy of the parent: an
+.Em embryonic
+process is created from an executable with the given arguments and
+environment, its file descriptors are configured explicitly, and it is
+then submitted to the scheduler.
+Closing the process descriptor before the process is started destroys
+it.
+.Pp
+The
+.Fn pdrfork
 function with an
 .Fa rfflags
 of
 .Dv RFEMBRYO
-creates an
-.Em embryonic
-process: one that exists but has never run.
-It has no address space and no program, an empty file descriptor table
-and default signal handling.
+creates the unscheduled embryonic process.
+It has no address space and no program: it is a bare process with an
+empty file descriptor table and default signal handling.
 Because an embryo inherits nothing,
 .Dv RFEMBRYO
 describes the new process completely and may not be combined with the
@@ -254,14 +277,10 @@ the pid of the new process is returned, and the
 argument takes the same flags as
 .Fn pdfork .
 .Pp
-Unlike the traditional
-.Fn fork Ns / Ns Fn execve
-pattern, the new process is never a copy of the parent: its descriptors
-are configured explicitly rather than inherited and then closed.
-.Pp
 The
 .Fn pdexec
-function gives the embryonic process a program and runs it.
+function gives the embryonic process an address space by loading a
+program into it.
 The executable referenced by the file descriptor
 .Fa execfd
 is loaded (as with
@@ -271,33 +290,63 @@ and the
 and
 .Fa envv
 arguments specify the argument and environment vectors.
-The
-.Fa flags
-argument is reserved and must be zero.
 .Pp
-Loading a program and running it is one operation, which is what
+The
+.Fn pdexec
+function gives the embryonic process an address space by loading a
+program into it.
+The executable referenced by the file descriptor
+.Fa execfd
+is loaded (as with
+.Xr fexecve 2 ) ,
+and the
+.Fa argv
+and
+.Fa envv
+arguments specify the argument and environment vectors.
+.Pp
+Unless the
+.Fa flags
+argument includes
+.Dv PD_NOSTART ,
+the process is started as part of the same call: loading a program and
+running it is one operation, which is what
 .Xr execve 2
 does, aimed at another process rather than at the caller.
-Leaving the process stopped with its program in place, so that it can be
-configured further once the image is known, is future work.
+.Dv PD_NOSTART
+instead leaves the process stopped with the program in place, so that it
+can be configured further \(em with the image known \(em and released
+later with
+.Fn pdstart .
 .Pp
-The exec is performed by the target process itself, on its own thread and
-in its own address space, rather than by the caller.
-The process therefore has no address space at all until
-.Fn pdexec ,
-and a failure to load the program is fatal to it: there is nothing for a
-process that has never run to fall back to, so it is destroyed and its
-creator learns of this through the process descriptor.
-.Pp
-.Fn pdexec
-requires the
+Starting the process requires the
 .Dv CAP_PDKILL
 capability right on
 .Fa fd
 in addition to
 .Dv CAP_PDSETFD ,
-since starting a process is the same authority that killing one is
-gated by.
+since it is the same authority
+.Fn pdstart
+requires.
+.Pp
+Allocating the process and deciding what it will run are separate steps
+so that the interface remains a builder: the process is created, then
+configured, then committed.
+A process that has not been given a program cannot be started, and
+.Fn pdexec
+may be called again after a failure that left the address space
+untouched \(em which is what searching a path for an executable
+requires.
+.Pp
+The
+.Fn pdstart
+function submits the embryonic process to the scheduler, promoting it
+to a regular process that is scheduled like any
+other.
+(The first time it is scheduled, execution begins.)
+After this call, the process descriptor behaves identically to one
+created by
+.Fn pdfork .
 .Pp
 The
 .Fn pdsetfd
@@ -347,6 +396,12 @@ naming them; the same protection is applied to a set-user-ID or
 set-group-ID program's descriptors across
 .Xr execve 2 .
 Descriptors numbered 3 and above are not restricted.
+.Pp
+The
+.Fn pdstart
+function submits the embryonic process to the scheduler, promoting it
+to a regular process that is scheduled like any
+other.
 (The first time it is scheduled, execution begins.)
 After this call, the process descriptor behaves identically to one
 created by
@@ -584,8 +639,9 @@ does.
 .Fn pdsetpgid ,
 .Fn pdsetschedparam ,
 .Fn pdsetscheduler ,
+.Fn pdresetids ,
 and
-.Fn pdresetids
+.Fn pdstart
 return 0 on success and -1 on failure.
 .Sh ERRORS
 These functions may return the same error numbers as their PID-based equivalents
@@ -693,6 +749,19 @@ such as a kqueue.
 .Pp
 The
 .Fn pdrfork
+function may fail with:
+.Bl -tag -width Er
+.It Bq Er ENOEXEC
+The file referenced by
+.Fa fd
+is not a recognized executable format.
+.It Bq Er EACCES
+Permission to execute the file was denied.
+.It Bq Er EAGAIN
+The system process limit was reached.
+.It Bq Er ENOMEM
+Insufficient memory.
+.El
 .Pp
 The
 .Fn pdsetfd
@@ -720,6 +789,22 @@ is 0, 1 or 2, and
 .Fa localfd
 references a file whose backing may change after execution begins.
 .El
+.Pp
+The
+.Fn pdstart
+function may fail with:
+.Bl -tag -width Er
+.It Bq Er EBADF
+.Fa fd
+is not a valid file descriptor.
+.It Bq Er EINVAL
+.Fa fd
+is not a process file descriptor.
+.It Bq Er EINVAL
+The process has already been started, or
+.Fn pdrfork
+did not complete successfully.
+.El
 .Sh SECURITY CONSIDERATIONS
 Like most types of file descriptors, process descriptors may be passed
 to another process.
@@ -728,7 +813,8 @@ A process created with
 runs with the credentials of the process that called
 .Fn pdrfork ,
 .Em not
-the credentials of whichever process eventually starts it.
+the credentials of the one that called
+.Fn pdstart .
 Therefore, handing off a process descriptor to an embryonic process
 should be considered to have security risks similar to marking a binary
 set-user-ID \(em in both cases a possibly less-privileged process has
@@ -792,8 +878,10 @@ rights so that authority can be delegated at a fine granularity:
 requires
 .Dv CAP_PDSETFD ,
 while
+.Fn pdstart
+and
 .Xr pdkill 2
-merely requires
+merely require
 .Dv CAP_PDKILL .
 If the
 .Fn pdrfork
@@ -802,6 +890,16 @@ caller uses
 to delegate a descriptor that permits starting or killing the process
 without permitting its descriptor table to be reconfigured, then the
 security concern is mitigated.
+.Pp
+Also note that the executable is validated when
+.Fn pdrfork
+loads it (which requires
+.Dv CAP_FEXECVE
+on
+.Fa fd ) ,
+so
+.Fn pdstart
+performs no further permission check.
 .Sh SEE ALSO
 .Xr close 2 ,
 .Xr fork 2 ,
@@ -833,9 +931,10 @@ and
 system calls first appeared in
 .Fx 16.0 .
 The
-.Fn pdrfork
+.Fn pdrfork ,
+.Fn pdsetfd ,
 and
-.Fn pdsetfd
+.Fn pdstart
 system calls first appeared in
 .Fx 16.0 .
 .Pp
@@ -865,8 +964,9 @@ and
 functions were developed by
 .An Konstantin Belousov Aq Mt kib@FreeBSD.org .
 The
-.Fn pdrfork
+.Fn pdrfork ,
+.Fn pdsetfd ,
 and
-.Fn pdsetfd
+.Fn pdstart
 functions were developed by
 .An John Ericson Aq Mt subscribe@johnericson.me .

@@ -96,6 +96,8 @@ struct image_params {
 #define IMGP_ASLR_SHARED_PAGE	0x1
 	uint32_t imgp_flags;
 	struct vnode *interpreter_vp;	/* vnode of the interpreter */
+	struct thread *caller_td;	/* non-NULL: embryonic exec, use this
+					   thread for fd lookups/cred checks */
 };
 
 #ifdef _KERNEL
@@ -140,6 +142,9 @@ int	exec_activate(struct image_params *, struct ucred *,
 	    , struct label *, bool *
 #endif
 	    );
+int	imgp_copyout(const struct image_params *, const void *, void *, size_t);
+int	imgp_suword(const struct image_params *, void *, long);
+int	imgp_suword32(const struct image_params *, void *, int32_t);
 void	exec_install_setid(struct image_params *, struct thread *,
 	    struct ucred *);
 void	exec_finalize(struct image_params *, struct vnode *,

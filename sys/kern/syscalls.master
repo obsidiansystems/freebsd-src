@@ -3509,4 +3509,9 @@
 		    int procfd
 		);
 	}
+615	AUE_NULL	STD|CAPENABLED {
+		int pdstart(
+		    int procfd
+		);
+	}
 ; vim: syntax=off

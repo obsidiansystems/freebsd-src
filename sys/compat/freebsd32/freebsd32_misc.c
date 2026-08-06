@@ -3694,7 +3694,7 @@ freebsd32_copyout_strings(struct image_params *imgp, uintptr_t *stack_base)
 		szsigcode = *sysent->sv_szsigcode;
 		destp -= szsigcode;
 		destp = rounddown2(destp, sizeof(uint32_t));
-		error = copyout(sysent->sv_sigcode, (void *)destp,
+		error = imgp_copyout(imgp, sysent->sv_sigcode, (void *)destp,
 		    szsigcode);
 		if (error != 0)
 			return (error);
@@ -3707,7 +3707,7 @@ freebsd32_copyout_strings(struct image_params *imgp, uintptr_t *stack_base)
 		execpath_len = strlen(imgp->execpath) + 1;
 		destp -= execpath_len;
 		imgp->execpathp = (void *)destp;
-		error = copyout(imgp->execpath, imgp->execpathp, execpath_len);
+		error = imgp_copyout(imgp, imgp->execpath, imgp->execpathp, execpath_len);
 		if (error != 0)
 			return (error);
 	}
@@ -3718,7 +3718,7 @@ freebsd32_copyout_strings(struct image_params *imgp, uintptr_t *stack_base)
 	arc4rand(canary, sizeof(canary), 0);
 	destp -= sizeof(canary);
 	imgp->canary = (void *)destp;
-	error = copyout(canary, imgp->canary, sizeof(canary));
+	error = imgp_copyout(imgp, canary, imgp->canary, sizeof(canary));
 	if (error != 0)
 		return (error);
 	imgp->canarylen = sizeof(canary);
@@ -3731,7 +3731,7 @@ freebsd32_copyout_strings(struct image_params *imgp, uintptr_t *stack_base)
 	destp -= sizeof(pagesizes32);
 	destp = rounddown2(destp, sizeof(uint32_t));
 	imgp->pagesizes = (void *)destp;
-	error = copyout(pagesizes32, imgp->pagesizes, sizeof(pagesizes32));
+	error = imgp_copyout(imgp, pagesizes32, imgp->pagesizes, sizeof(pagesizes32));
 	if (error != 0)
 		return (error);
 	imgp->pagesizeslen = sizeof(pagesizes32);
@@ -3771,7 +3771,7 @@ freebsd32_copyout_strings(struct image_params *imgp, uintptr_t *stack_base)
 	/*
 	 * Copy out strings - arguments and environment.
 	 */
-	error = copyout(stringp, (void *)ustringp,
+	error = imgp_copyout(imgp, stringp, (void *)ustringp,
 	    ARG_MAX - imgp->args->stringspace);
 	if (error != 0)
 		return (error);
@@ -3780,15 +3780,15 @@ freebsd32_copyout_strings(struct image_params *imgp, uintptr_t *stack_base)
 	 * Fill in "ps_strings" struct for ps, w, etc.
 	 */
 	imgp->argv = vectp;
-	if (suword32(&arginfo->ps_argvstr, (uint32_t)(intptr_t)vectp) != 0 ||
-	    suword32(&arginfo->ps_nargvstr, argc) != 0)
+	if (imgp_suword32(imgp, &arginfo->ps_argvstr, (uint32_t)(intptr_t)vectp) != 0 ||
+	    imgp_suword32(imgp, &arginfo->ps_nargvstr, argc) != 0)
 		return (EFAULT);
 
 	/*
 	 * Fill in argument portion of vector table.
 	 */
 	for (; argc > 0; --argc) {
-		if (suword32(vectp++, ustringp) != 0)
+		if (imgp_suword32(imgp, vectp++, ustringp) != 0)
 			return (EFAULT);
 		while (*stringp++ != 0)
 			ustringp++;
@@ -3796,19 +3796,19 @@ freebsd32_copyout_strings(struct image_params *imgp, uintptr_t *stack_base)
 	}
 
 	/* a null vector table pointer separates the argp's from the envp's */
-	if (suword32(vectp++, 0) != 0)
+	if (imgp_suword32(imgp, vectp++, 0) != 0)
 		return (EFAULT);
 
 	imgp->envv = vectp;
-	if (suword32(&arginfo->ps_envstr, (uint32_t)(intptr_t)vectp) != 0 ||
-	    suword32(&arginfo->ps_nenvstr, envc) != 0)
+	if (imgp_suword32(imgp, &arginfo->ps_envstr, (uint32_t)(intptr_t)vectp) != 0 ||
+	    imgp_suword32(imgp, &arginfo->ps_nenvstr, envc) != 0)
 		return (EFAULT);
 
 	/*
 	 * Fill in environment portion of vector table.
 	 */
 	for (; envc > 0; --envc) {
-		if (suword32(vectp++, ustringp) != 0)
+		if (imgp_suword32(imgp, vectp++, ustringp) != 0)
 			return (EFAULT);
 		while (*stringp++ != 0)
 			ustringp++;
@@ -3816,7 +3816,7 @@ freebsd32_copyout_strings(struct image_params *imgp, uintptr_t *stack_base)
 	}
 
 	/* end of vector table is a null pointer */
-	if (suword32(vectp, 0) != 0)
+	if (imgp_suword32(imgp, vectp, 0) != 0)
 		return (EFAULT);
 
 	if (imgp->auxargs) {

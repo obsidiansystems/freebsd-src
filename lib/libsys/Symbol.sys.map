@@ -405,6 +405,7 @@ FBSD_1.9 {
 	pdsetscheduler;
 	pdsetsigign;
 	pdsetsigmask;
+	pdstart;
 	renameat2;
 };
 

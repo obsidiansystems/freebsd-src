@@ -524,8 +524,9 @@ __elfN(check_header)(const Elf_Ehdr *hdr)
 }
 
 static int
-__elfN(map_partial)(vm_map_t map, vm_object_t object, vm_ooffset_t offset,
-    vm_offset_t start, vm_offset_t end, vm_prot_t prot)
+__elfN(map_partial)(const struct image_params *imgp, vm_map_t map,
+    vm_object_t object, vm_ooffset_t offset, vm_offset_t start,
+    vm_offset_t end, vm_prot_t prot)
 {
 	struct sf_buf *sf;
 	int error;
@@ -545,8 +546,8 @@ __elfN(map_partial)(vm_map_t map, vm_object_t object, vm_ooffset_t offset,
 		if (sf == NULL)
 			return (KERN_FAILURE);
 		off = offset - trunc_page(offset);
-		error = copyout((caddr_t)sf_buf_kva(sf) + off, (caddr_t)start,
-		    end - start);
+		error = imgp_copyout(imgp, (caddr_t)sf_buf_kva(sf) + off,
+		    (void *)start, end - start);
 		vm_imgact_unmap_page(sf);
 		if (error != 0)
 			return (KERN_FAILURE);
@@ -566,7 +567,7 @@ __elfN(map_insert)(const struct image_params *imgp, vm_map_t map,
 	int error, locked, rv;
 
 	if (start != trunc_page(start)) {
-		rv = __elfN(map_partial)(map, object, offset, start,
+		rv = __elfN(map_partial)(imgp, map, object, offset, start,
 		    round_page(start), prot);
 		if (rv != KERN_SUCCESS)
 			return (rv);
@@ -574,7 +575,7 @@ __elfN(map_insert)(const struct image_params *imgp, vm_map_t map,
 		start = round_page(start);
 	}
 	if (end != round_page(end)) {
-		rv = __elfN(map_partial)(map, object, offset +
+		rv = __elfN(map_partial)(imgp, map, object, offset +
 		    trunc_page(end) - start, trunc_page(end), end, prot);
 		if (rv != KERN_SUCCESS)
 			return (rv);
@@ -601,8 +602,8 @@ __elfN(map_insert)(const struct image_params *imgp, vm_map_t map,
 			sz = end - start;
 			if (sz > PAGE_SIZE - off)
 				sz = PAGE_SIZE - off;
-			error = copyout((caddr_t)sf_buf_kva(sf) + off,
-			    (caddr_t)start, sz);
+			error = imgp_copyout(imgp, (caddr_t)sf_buf_kva(sf) + off,
+			    (void *)start, sz);
 			vm_imgact_unmap_page(sf);
 			if (error != 0)
 				return (KERN_FAILURE);
@@ -713,7 +714,7 @@ __elfN(load_section)(const struct image_params *imgp, vm_ooffset_t offset,
 			return (EIO);
 
 		/* send the page fragment to user space */
-		error = copyout(sf_buf_kva(sf), (caddr_t)map_addr,
+		error = imgp_copyout(imgp, sf_buf_kva(sf), (void *)map_addr,
 		    copy_len);
 		vm_imgact_unmap_page(sf);
 		if (error != 0)
@@ -1557,7 +1558,8 @@ __elfN(freebsd_copyout_auxargs)(struct image_params *imgp, uintptr_t base)
 	imgp->auxargs = NULL;
 	KASSERT(pos - argarray <= AT_COUNT, ("Too many auxargs"));
 
-	error = copyout(argarray, (void *)base, sizeof(*argarray) * AT_COUNT);
+	error = imgp_copyout(imgp, argarray, (void *)base,
+	    sizeof(*argarray) * AT_COUNT);
 	free(argarray, M_TEMP);
 	return (error);
 }
@@ -1569,8 +1571,13 @@ __elfN(freebsd_fixup)(uintptr_t *stack_base, struct image_params *imgp)
 
 	base = (Elf_Addr *)*stack_base;
 	base--;
-	if (elf_suword(base, imgp->args->argc) == -1)
+#if __ELF_WORD_SIZE == 64
+	if (imgp_suword(imgp, base, imgp->args->argc) == -1)
 		return (EFAULT);
+#else
+	if (imgp_suword32(imgp, base, imgp->args->argc) == -1)
+		return (EFAULT);
+#endif
 	*stack_base = (uintptr_t)base;
 	return (0);
 }

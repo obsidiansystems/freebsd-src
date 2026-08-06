@@ -489,6 +489,7 @@ typedef int (__sys_pdsetpgid_t)(int, pid_t);
 typedef int (__sys_pdsetschedparam_t)(int, const struct sched_param *);
 typedef int (__sys_pdsetscheduler_t)(int, int, const struct sched_param *);
 typedef int (__sys_pdresetids_t)(int);
+typedef int (__sys_pdstart_t)(int);
 
 _Noreturn void __sys__exit(int rval);
 int __sys_fork(void);
@@ -911,6 +912,7 @@ int __sys_pdsetpgid(int procfd, pid_t pgid);
 int __sys_pdsetschedparam(int procfd, const struct sched_param * param);
 int __sys_pdsetscheduler(int procfd, int policy, const struct sched_param * param);
 int __sys_pdresetids(int procfd);
+int __sys_pdstart(int procfd);
 __END_DECLS
 
 #endif /* __LIBSYS_H_ */

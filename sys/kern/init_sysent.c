@@ -682,4 +682,5 @@ struct sysent sysent[] = {
 	{ .sy_narg = AS(pdsetschedparam_args), .sy_call = (sy_call_t *)sys_pdsetschedparam, .sy_auevent = AUE_NULL, .sy_flags = SYF_CAPENABLED, .sy_thrcnt = SY_THR_STATIC },	/* 612 = pdsetschedparam */
 	{ .sy_narg = AS(pdsetscheduler_args), .sy_call = (sy_call_t *)sys_pdsetscheduler, .sy_auevent = AUE_NULL, .sy_flags = SYF_CAPENABLED, .sy_thrcnt = SY_THR_STATIC },	/* 613 = pdsetscheduler */
 	{ .sy_narg = AS(pdresetids_args), .sy_call = (sy_call_t *)sys_pdresetids, .sy_auevent = AUE_NULL, .sy_flags = SYF_CAPENABLED, .sy_thrcnt = SY_THR_STATIC },	/* 614 = pdresetids */
+	{ .sy_narg = AS(pdstart_args), .sy_call = (sy_call_t *)sys_pdstart, .sy_auevent = AUE_NULL, .sy_flags = SYF_CAPENABLED, .sy_thrcnt = SY_THR_STATIC },	/* 615 = pdstart */
 };

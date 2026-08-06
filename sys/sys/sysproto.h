@@ -1988,6 +1988,9 @@ struct pdsetscheduler_args {
 struct pdresetids_args {
 	char procfd_l_[PADL_(int)]; int procfd; char procfd_r_[PADR_(int)];
 };
+struct pdstart_args {
+	char procfd_l_[PADL_(int)]; int procfd; char procfd_r_[PADR_(int)];
+};
 int	sys__exit(struct thread *, struct _exit_args *);
 int	sys_fork(struct thread *, struct fork_args *);
 int	sys_read(struct thread *, struct read_args *);
@@ -2410,6 +2413,7 @@ int	sys_pdsetpgid(struct thread *, struct pdsetpgid_args *);
 int	sys_pdsetschedparam(struct thread *, struct pdsetschedparam_args *);
 int	sys_pdsetscheduler(struct thread *, struct pdsetscheduler_args *);
 int	sys_pdresetids(struct thread *, struct pdresetids_args *);
+int	sys_pdstart(struct thread *, struct pdstart_args *);
 
 #ifdef COMPAT_43
 
@@ -3424,6 +3428,7 @@ int	freebsd14_setgroups(struct thread *, struct freebsd14_setgroups_args *);
 #define	SYS_AUE_pdsetschedparam	AUE_NULL
 #define	SYS_AUE_pdsetscheduler	AUE_NULL
 #define	SYS_AUE_pdresetids	AUE_NULL
+#define	SYS_AUE_pdstart	AUE_NULL
 
 #undef PAD_
 #undef PADL_

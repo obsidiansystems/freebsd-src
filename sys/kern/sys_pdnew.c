@@ -491,59 +491,6 @@ sys_pdsetfd(struct thread *td, struct pdsetfd_args *uap)
 }
 
 /*
- * Argument block handed from pdexec(2) to the trampoline that runs in the
- * embryo.  It is freed by whichever side finishes with it: normally the
- * trampoline, via kern_execve().
- */
-struct pdexec_args_blk {
-	struct image_args	args;
-	int			execfd;
-};
-
-/*
- * The trampoline.
- *
- * This runs as the embryonic process's own thread, on its first and only
- * trip out of the kernel, and simply execs.  Everything execve(2) does then
- * happens in the right context: the image is activated into curproc's
- * vmspace, the argument strings are copied out with a plain copyout(9),
- * umtx_exec() and sigfastblock_clear() act on curthread, and the descriptor
- * table is processed by fdcloseexec() as usual.  None of that has to be
- * taught about acting on another process.
- *
- * On success kern_execve() does not come back here; the thread returns to
- * userspace running the new program.  On failure there is nothing to return
- * to, since this process has never had a program, so it exits.
- */
-static void
-pdexec_trampoline(void *arg)
-{
-	struct pdexec_args_blk *blk = arg;
-	struct thread *td = curthread;
-	int error;
-
-	error = kern_execve(td, &blk->args, NULL, NULL);
-	free(blk, M_TEMP);
-
-	/*
-	 * EJUSTRETURN is how a successful execve(2) reports that the register
-	 * state has been replaced and must not be touched again; returning
-	 * from here does exactly that, and the process starts running its new
-	 * program.
-	 */
-	if (error == EJUSTRETURN)
-		return;
-
-	/*
-	 * The image could not be loaded.  A process that has never run has
-	 * nothing to fall back to, so it dies here; its creator learns of it
-	 * through the process descriptor.
-	 */
-	exit1(td, 0, SIGABRT);
-	/* NOTREACHED */
-}
-
-/*
  * Release an embryonic process: mark it complete, announce it, and let it
  * run.
  *
@@ -603,41 +550,59 @@ pdstart_proc(struct proc *p)
 }
 
 /*
- * kern_pdexec: give an embryonic process a program, and run it.
+ * kern_pdexec: give an embryonic process its address space, by loading an
+ * executable into it.
  *
- * The exec itself is not performed here.  It is performed by the target, on
- * its own thread, in its own address space -- see pdexec_trampoline().  All
- * this call does is prepare the handoff and let the process go.
+ * This is the step pdnew() deliberately does not take: it decides what the
+ * process will run.  pdstart() then releases it.
  *
- * The executable is named by a descriptor of the *caller*, but the exec runs
- * in the target, which has its own (empty) descriptor table.  So the
- * descriptor is installed into the target first, close-on-exec, at the same
- * number: the exec that follows both uses it and closes it, and a shebang
- * interpreter can still reach the script through /dev/fd/N while it lasts.
+ * On failure before the point of no return the embryo is untouched and the
+ * caller may try again with a different executable, which is what a PATH
+ * search wants.  Past that point (imgp.vmspace_destroyed) there is nothing
+ * to retry with, but p_textvp is still NULL, so pdstart() refuses the
+ * process and closing the descriptor destroys it.
  */
 static int
-kern_pdexec(struct thread *td, int procfd, int execfd, struct image_args *args)
+kern_pdexec(struct thread *td, int procfd, int exec_fd,
+    struct image_args *args, int flags)
 {
-	struct pdexec_args_blk *blk;
-	struct filecaps fcaps;
 	struct proc *p2;
 	struct thread *td2;
-	struct file *fp_pd, *efp;
+	struct file *fp_pd;
+	struct nameidata nd;
+	struct ucred *oldcred;
+	struct uidinfo *euip = NULL;
+	uintptr_t stack_base;
+	struct image_params image_params, *imgp;
+	struct vattr attr;
+	struct pargs *newargs = NULL;
+	struct vnode *newtextvp;
+	struct vnode *newtextdvp;
 	cap_rights_t rights;
+	char *newbinname;
+#ifdef MAC
+	struct label *interpvplabel = NULL;
+	bool will_transition;
+#endif
 	int error;
 
 	/*
-	 * Deciding what a process will run is at least as much authority as
-	 * configuring it, and releasing it is what pdkill(2) guards, so
-	 * require both rights.
+	 * Loading the image needs the same authority as any other change to
+	 * the embryo; releasing it needs what pdstart(2) needs, so ask for
+	 * both when this call will also start the process.
 	 */
 	cap_rights_init(&rights, CAP_PDSETFD);
-	cap_rights_set(&rights, CAP_PDKILL);
+	if ((flags & PD_NOSTART) == 0)
+		cap_rights_set(&rights, CAP_PDKILL);
 	error = procdesc_find(td, procfd, &rights, &p2, &fp_pd);
 	if (error != 0)
 		return (error);
 
-	/* Must be an embryo that has not been given a program yet. */
+	/*
+	 * Must be an embryo that has not been given an image yet.  p_textvp
+	 * is what pdstart() keys on, so it doubles as the "already loaded"
+	 * test here.
+	 */
 	if (p2->p_state != PRS_NEW || (p2->p_flag & P_INEXEC) == 0 ||
 	    p2->p_textvp != NULL) {
 		PROC_UNLOCK(p2);
@@ -648,59 +613,231 @@ kern_pdexec(struct thread *td, int procfd, int execfd, struct image_args *args)
 	td2 = FIRST_THREAD_IN_PROC(p2);
 
 	/*
-	 * Hand the executable to the target, preserving the rights the
-	 * caller retained on it rather than granting the child full rights.
+	 * Validate the executable.  Nothing is committed until exec_activate()
+	 * below replaces the address space, so a bad executable costs nothing.
 	 */
-	error = fget_cap(td, execfd, &cap_fexecve_rights, NULL, &efp, &fcaps);
-	if (error != 0) {
-		fdrop(fp_pd, td);
-		return (error);
-	}
-	error = finstall_at(td, p2, efp, execfd, O_CLOEXEC, &fcaps);
+
+	imgp = &image_params;
+	newtextvp = NULL;
+	newtextdvp = NULL;
+	newbinname = NULL;
+
+	bzero(imgp, sizeof(*imgp));
+	imgp->attr = &attr;
+	imgp->args = args;
+	imgp->caller_td = td;
+
+	args->fd = exec_fd;
+
+#ifdef MAC
+	error = mac_execve_enter(imgp, NULL);
+	if (error)
+		goto exec_fail;
+#endif
+
+	SDT_PROBE1(proc, , , exec, args->fname);
+
+	/* Look up the executable from the caller's fd table. */
+	error = exec_fgetvp(imgp, td, args->fd, &newtextvp);
 	if (error != 0)
-		filecaps_free(&fcaps);
-	fdrop(efp, td);
-	if (error != 0) {
-		fdrop(fp_pd, td);
-		return (error);
-	}
+		goto exec_fail;
+
+	/* Check permissions and map the first page. */
+	error = exec_prepare_image(imgp);
+	if (error)
+		goto exec_fail_dealloc;
 
 	/*
-	 * Give the process an empty address space, and build its kernel
-	 * stack and trampoline.
+	 * Load the executable into the embryonic process.
 	 *
-	 * Both happen here rather than at creation so that an embryo which
-	 * has not been given a program has no address space at all: there is
-	 * nothing to describe until there is something to run.  The vmspace
-	 * comes first because cpu_fork() needs a pmap to preload from on some
-	 * architectures; the exec that follows replaces it, exactly as
-	 * execve(2) replaces the address space of any other process.
+	 * The image is already mapped (above).  Now wire it
+	 * up to the process and run the image activators to create
+	 * the vmspace.
 	 */
-	p2->p_vmspace = vmspace_alloc(p2->p_sysent->sv_minuser,
-	    p2->p_sysent->sv_maxuser, pmap_pinit);
-	if (p2->p_vmspace == NULL) {
-		fdrop(fp_pd, td);
-		return (ENOMEM);
+
+	imgp->proc = p2;
+	imgp->td = td2;
+
+	oldcred = p2->p_ucred;
+
+	p2->p_osrel = 0;
+	p2->p_fctl0 = 0;
+	p2->p_elf_brandinfo = NULL;
+
+interpret:
+	error = exec_activate(imgp, oldcred, &attr, &euip, NULL
+#ifdef MAC
+	    , interpvplabel, &will_transition
+#endif
+	    );
+	if (error)
+		goto exec_fail_dealloc;
+
+	/*
+	 * Special interpreter operation, cleanup and loop up to try to
+	 * activate the interpreter.
+	 */
+	if (imgp->interpreted) {
+		exec_interpreter_cleanup(imgp, td
+#ifdef MAC
+		    , &interpvplabel
+#endif
+		    );
+		newtextvp = NULL;
+		/*
+		 * Free the previous iteration's namei resources before
+		 * resolving the next interpreter (relevant for a multi-level
+		 * chain, e.g. binmisc -> shebang), as do_execve() does.
+		 * args->fname is non-NULL only after the namei path populated
+		 * nd/newtextdvp/newbinname.
+		 */
+		if (args->fname != NULL) {
+			if (newtextdvp != NULL) {
+				vrele(newtextdvp);
+				newtextdvp = NULL;
+			}
+			NDFREE_PNBUF(&nd);
+			free(newbinname, M_PARGS);
+			newbinname = NULL;
+		}
+		/* Resolve the interpreter. */
+		if (imgp->interpreter_vp) {
+			args->fname = NULL;
+			exec_interpreter_vp(imgp, &newtextvp);
+		} else {
+			struct file *efp;
+			struct filecaps efcaps;
+
+			/*
+			 * A shebang interpreter references the script as
+			 * "/dev/fd/N" (N == exec_fd) in the rewritten
+			 * arguments and must be able to open it.  Unlike
+			 * fexecve(2), the embryonic process has a fresh
+			 * descriptor table, so install the exec fd into it
+			 * at that number, preserving its capability rights
+			 * (fget_cap) rather than granting the child full
+			 * rights on the executable.
+			 */
+			error = fget_cap(td, exec_fd, &cap_no_rights, NULL,
+			    &efp, &efcaps);
+			if (error != 0)
+				goto exec_fail;
+			error = finstall_at(td, p2, efp, exec_fd, 0,
+			    &efcaps);
+			if (error != 0)
+				filecaps_free(&efcaps);
+			fdrop(efp, td);
+			if (error != 0)
+				goto exec_fail;
+
+			args->fname = imgp->interpreter_name;
+			error = exec_interpreter_namei(imgp, td, &nd,
+			    &newtextvp, &newtextdvp, &newbinname);
+			if (error)
+				goto exec_fail;
+		}
+		error = exec_prepare_image(imgp);
+		if (error)
+			goto exec_fail_dealloc;
+		goto interpret;
 	}
+
+	error = exec_copyout_stack(imgp, &stack_base);
+	if (error != 0)
+		goto exec_fail_dealloc;
+
+	/*
+	 * Set up td2's kernel stack, PCB, and fork_trampoline via cpu_fork.
+	 * This must run after the image activator has created p2's vmspace
+	 * (exec_new_vmspace(), above): on i386/arm cpu_fork() dereferences
+	 * vmspace_pmap(p2->p_vmspace) to preload pcb_cr3, which would panic
+	 * while p2->p_vmspace is still NULL.  (amd64/arm64 do not touch
+	 * p_vmspace here.)  Unlike do_fork(), where vm_forkproc() builds the
+	 * vmspace before cpu_fork(), pdnew() gets its vmspace from exec, so
+	 * cpu_fork() necessarily runs here in the exec path.  cpu_fork()
+	 * copies the parent's trapframe/PCB, which is wasted work since
+	 * sv_setregs (in exec_finalize below) overwrites the user registers.
+	 *
+	 * TODO: an embryonic cpu_fork() variant that only builds the
+	 * trampoline would avoid both the ordering constraint and the waste.
+	 */
 	cpu_fork(td, p2, td2, RFPROC);
 
-	blk = malloc(sizeof(*blk), M_TEMP, M_WAITOK);
-	blk->args = *args;
-	blk->execfd = execfd;
-	blk->args.fd = execfd;
+	newargs = exec_cache_args(imgp->args);
 
-	cpu_fork_kthread_handler(td2, pdexec_trampoline, blk);
+	vn_lock(imgp->vp, LK_SHARED | LK_RETRY);
+
+	PROC_LOCK(p2);
+
+	exec_set_comm(imgp, NULL, 0);
+
+	exec_install_setid(imgp, td, oldcred);
+#ifdef MAC
+	if (imgp->credential_setid && will_transition)
+		mac_vnode_execve_transition(oldcred, imgp->newcred, imgp->vp,
+		    interpvplabel, imgp);
+#endif
 
 	/*
-	 * Release the process.  From here the target runs the trampoline and
-	 * execs itself; there is nothing further for this call to do, and the
-	 * result of the exec is reported through the process descriptor
-	 * rather than through this syscall.
+	 * Install the new credentials.  Unlike do_execve(), the embryonic
+	 * process starts from a clean descriptor table, so there is no
+	 * fdsetugidsafety()/fdcheckstd() pass to run beforehand.
 	 */
-	PROC_LOCK(p2);
-	pdstart_proc(p2);
+	if (imgp->newcred != NULL) {
+		proc_set_cred(p2, imgp->newcred);
+		crfree(oldcred);
+		oldcred = NULL;
+	}
+
+	exec_finalize(imgp, newtextvp, &newbinname, &newargs, stack_base);
+
+	/*
+	 * Cleanup -- runs on both success and failure paths.
+	 */
+exec_fail_dealloc:
+	exec_cleanup_imgp(imgp, td, error);
+
+	/* Clean up namei resources from interpreter resolution. */
+	if (imgp->vp != NULL) {
+		if (args->fname != NULL)
+			NDFREE_PNBUF(&nd);
+		if (newtextdvp != NULL)
+			vrele(newtextdvp);
+		free(newbinname, M_PARGS);
+	}
+
+	if (error != 0) {
+exec_fail:
+		SDT_PROBE1(proc, , , exec__failure, error);
+	}
+
+	exec_cleanup_cred(imgp, oldcred,
+#ifdef MAC
+	    interpvplabel,
+#endif
+	    args, newargs, euip);
+
+	/*
+	 * Unless the caller asked to keep the process stopped, release it
+	 * here, so that loading a program and running it is one call -- what
+	 * execve(2) does, aimed at another process.  PD_NOSTART instead
+	 * leaves it for pdstart(2), so it can be configured with the image
+	 * in place first.
+	 */
+	if (error == 0 && (flags & PD_NOSTART) == 0) {
+		PROC_LOCK(p2);
+		pdstart_proc(p2);
+	}
+
+	/*
+	 * The process belongs to the caller either way: on success it now
+	 * has an image, and is running unless PD_NOSTART was given; on
+	 * failure it is left as it was, or -- past the point of no return --
+	 * unstartable.  Destroying it is the caller's business, done by
+	 * closing the descriptor.
+	 */
 	fdrop(fp_pd, td);
-	return (0);
+	return (error);
 }
 
 int
@@ -709,14 +846,14 @@ sys_pdexec(struct thread *td, struct pdexec_args *uap)
 	struct image_args args;
 	int error;
 
-	if (uap->flags != 0)
+	if ((uap->flags & ~PD_ALLOWED_AT_EXEC) != 0)
 		return (EINVAL);
 
 	error = exec_copyin_args(&args, NULL, uap->argv, uap->envv);
 	if (error != 0)
 		return (error);
 
-	error = kern_pdexec(td, uap->procfd, uap->fd, &args);
+	error = kern_pdexec(td, uap->procfd, uap->fd, &args, uap->flags);
 	if (error != 0) {
 		exec_free_args(&args);
 		return (error);
@@ -1180,4 +1317,37 @@ sys_pdresetids(struct thread *td, struct pdresetids_args *uap)
 	error = pdresetids_proc(p);
 	fdrop(fp_pd, td);
 	return (error);
+}
+
+/*
+ * Submit an embryonic process to the scheduler, promoting it to a regular
+ * process.
+ *
+ * This is only reachable for a process that has a program but was not
+ * started by the call that gave it one; pdexec(2) starts what it loads.
+ */
+int
+sys_pdstart(struct thread *td, struct pdstart_args *uap)
+{
+	struct proc *p;
+	struct file *fp_pd;
+	cap_rights_t rights;
+	int error;
+
+	error = procdesc_find(td, uap->procfd,
+	    cap_rights_init(&rights, CAP_PDKILL), &p, &fp_pd);
+	if (error != 0)
+		return (error);
+
+	/* Must be an embryonic process with an executable loaded. */
+	if (p->p_state != PRS_NEW || (p->p_flag & P_INEXEC) == 0 ||
+	    p->p_textvp == NULL) {
+		PROC_UNLOCK(p);
+		fdrop(fp_pd, td);
+		return (EINVAL);
+	}
+
+	pdstart_proc(p);
+	fdrop(fp_pd, td);
+	return (0);
 }

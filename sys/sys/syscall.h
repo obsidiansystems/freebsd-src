@@ -554,4 +554,5 @@
 #define	SYS_pdsetschedparam	612
 #define	SYS_pdsetscheduler	613
 #define	SYS_pdresetids	614
-#define	SYS_MAXSYSCALL	615
+#define	SYS_pdstart	615
+#define	SYS_MAXSYSCALL	616

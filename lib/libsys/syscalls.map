@@ -850,4 +850,6 @@ FBSDprivate_1.0 {
 	__sys_pdsetscheduler;
 	_pdresetids;
 	__sys_pdresetids;
+	_pdstart;
+	__sys_pdstart;
 };

@@ -633,7 +633,7 @@ linux_copyout_strings(struct image_params *imgp, uintptr_t *stack_base)
 		destp -= execpath_len;
 		destp = rounddown2(destp, sizeof(uint32_t));
 		imgp->execpathp = (void *)destp;
-		error = copyout(imgp->execpath, imgp->execpathp, execpath_len);
+		error = imgp_copyout(imgp, imgp->execpath, imgp->execpathp, execpath_len);
 		if (error != 0)
 			return (error);
 	}
@@ -642,7 +642,7 @@ linux_copyout_strings(struct image_params *imgp, uintptr_t *stack_base)
 	arc4rand(canary, sizeof(canary), 0);
 	destp -= roundup(sizeof(canary), sizeof(uint32_t));
 	imgp->canary = (void *)destp;
-	error = copyout(canary, imgp->canary, sizeof(canary));
+	error = imgp_copyout(imgp, canary, imgp->canary, sizeof(canary));
 	if (error != 0)
 		return (error);
 
@@ -676,19 +676,19 @@ linux_copyout_strings(struct image_params *imgp, uintptr_t *stack_base)
 	envc = imgp->args->envc;
 
 	/* Copy out strings - arguments and environment. */
-	error = copyout(stringp, (void *)ustringp,
+	error = imgp_copyout(imgp, stringp, (void *)ustringp,
 	    ARG_MAX - imgp->args->stringspace);
 	if (error != 0)
 		return (error);
 
 	/* Fill in "ps_strings" struct for ps, w, etc. */
-	if (suword32(&arginfo->ps_argvstr, (uint32_t)(intptr_t)vectp) != 0 ||
-	    suword32(&arginfo->ps_nargvstr, argc) != 0)
+	if (imgp_suword32(imgp, &arginfo->ps_argvstr, (uint32_t)(intptr_t)vectp) != 0 ||
+	    imgp_suword32(imgp, &arginfo->ps_nargvstr, argc) != 0)
 		return (EFAULT);
 
 	/* Fill in argument portion of vector table. */
 	for (; argc > 0; --argc) {
-		if (suword32(vectp++, ustringp) != 0)
+		if (imgp_suword32(imgp, vectp++, ustringp) != 0)
 			return (EFAULT);
 		while (*stringp++ != 0)
 			ustringp++;
@@ -696,16 +696,16 @@ linux_copyout_strings(struct image_params *imgp, uintptr_t *stack_base)
 	}
 
 	/* A null vector table pointer separates the argp's from the envp's. */
-	if (suword32(vectp++, 0) != 0)
+	if (imgp_suword32(imgp, vectp++, 0) != 0)
 		return (EFAULT);
 
-	if (suword32(&arginfo->ps_envstr, (uint32_t)(intptr_t)vectp) != 0 ||
-	    suword32(&arginfo->ps_nenvstr, envc) != 0)
+	if (imgp_suword32(imgp, &arginfo->ps_envstr, (uint32_t)(intptr_t)vectp) != 0 ||
+	    imgp_suword32(imgp, &arginfo->ps_nenvstr, envc) != 0)
 		return (EFAULT);
 
 	/* Fill in environment portion of vector table. */
 	for (; envc > 0; --envc) {
-		if (suword32(vectp++, ustringp) != 0)
+		if (imgp_suword32(imgp, vectp++, ustringp) != 0)
 			return (EFAULT);
 		while (*stringp++ != 0)
 			ustringp++;
@@ -713,7 +713,7 @@ linux_copyout_strings(struct image_params *imgp, uintptr_t *stack_base)
 	}
 
 	/* The end of the vector table is a null pointer. */
-	if (suword32(vectp, 0) != 0)
+	if (imgp_suword32(imgp, vectp, 0) != 0)
 		return (EFAULT);
 
 	if (imgp->auxargs) {

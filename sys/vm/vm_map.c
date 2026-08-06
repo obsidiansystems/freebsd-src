@@ -4964,7 +4964,8 @@ vmspace_exec(struct proc *p, vm_offset_t minuser, vm_offset_t maxuser)
 	newvmspace = vmspace_alloc(minuser, maxuser, pmap_pinit);
 	if (newvmspace == NULL)
 		return (ENOMEM);
-	newvmspace->vm_swrss = oldvmspace->vm_swrss;
+	/* An embryonic process (see pdnew(2)) has no prior vmspace. */
+	newvmspace->vm_swrss = oldvmspace != NULL ? oldvmspace->vm_swrss : 0;
 	/*
 	 * This code is written like this for prototype purposes.  The
 	 * goal is to avoid running down the vmspace here, but let the
@@ -4975,9 +4976,15 @@ vmspace_exec(struct proc *p, vm_offset_t minuser, vm_offset_t maxuser)
 	PROC_VMSPACE_LOCK(p);
 	p->p_vmspace = newvmspace;
 	PROC_VMSPACE_UNLOCK(p);
-	if (p == curthread->td_proc)
+	/*
+	 * When execing another process (pdnew(2)), curthread is not one of
+	 * p's threads: p's pmap is activated when its thread is scheduled,
+	 * and there is no old vmspace for post_execve() to reclaim.
+	 */
+	if (p == curthread->td_proc) {
 		pmap_activate(curthread);
-	curthread->td_pflags |= TDP_EXECVMSPC;
+		curthread->td_pflags |= TDP_EXECVMSPC;
+	}
 	return (0);
 }
 

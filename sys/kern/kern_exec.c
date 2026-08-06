@@ -1541,26 +1541,38 @@ exec_new_vmspace(struct image_params *imgp, struct sysentvec *sv)
 	imgp->vmspace_destroyed = true;
 	imgp->sysent = sv;
 
-	if (p->p_sysent->sv_onexec_old != NULL)
-		p->p_sysent->sv_onexec_old(td);
-	itimers_exec(p);
-
-	EVENTHANDLER_DIRECT_INVOKE(process_exec, p, imgp);
-
 	/*
-	 * Blow away entire process VM, if address space not shared,
-	 * otherwise, create a new VM space so that other threads are
-	 * not disrupted
+	 * For a normal exec these reset per-process state inherited across
+	 * the exec.  An embryonic process (vmspace == NULL, see pdnew(2))
+	 * is freshly allocated with nothing to reset, and is not curproc,
+	 * so handlers that assume curproc (e.g. aio rundown) must not run.
 	 */
-	map = &vmspace->vm_map;
+	if (vmspace != NULL) {
+		if (p->p_sysent->sv_onexec_old != NULL)
+			p->p_sysent->sv_onexec_old(td);
+		itimers_exec(p);
+		EVENTHANDLER_DIRECT_INVOKE(process_exec, p, imgp);
+	}
+
 	if (map_at_zero)
 		sv_minuser = sv->sv_minuser;
 	else
 		sv_minuser = MAX(sv->sv_minuser, PAGE_SIZE);
-	if (refcount_load(&vmspace->vm_refcnt) == 1 &&
-	    vm_map_min(map) == sv_minuser &&
-	    vm_map_max(map) == sv->sv_maxuser &&
-	    cpu_exec_vmspace_reuse(p, map)) {
+
+	/*
+	 * Blow away entire process VM, if address space not shared,
+	 * otherwise, create a new VM space so that other threads are
+	 * not disrupted.
+	 *
+	 * For embryonic processes (p_vmspace == NULL), skip straight
+	 * to creating a fresh vmspace via vmspace_exec().
+	 */
+	if (vmspace != NULL &&
+	    refcount_load(&vmspace->vm_refcnt) == 1 &&
+	    vm_map_min(&vmspace->vm_map) == sv_minuser &&
+	    vm_map_max(&vmspace->vm_map) == sv->sv_maxuser &&
+	    cpu_exec_vmspace_reuse(p, &vmspace->vm_map)) {
+		map = &vmspace->vm_map;
 		exec_free_abi_mappings(p);
 		shmexit(vmspace);
 		pmap_remove_pages(vmspace_pmap(vmspace));
@@ -1616,7 +1628,15 @@ exec_map_stack(struct image_params *imgp)
 			ssiz = rlim_stack.rlim_max;
 		if (ssiz > rlim_stack.rlim_cur) {
 			rlim_stack.rlim_cur = ssiz;
-			kern_setrlimit(curthread, RLIMIT_STACK, &rlim_stack);
+			/*
+			 * Raise the limit on imgp->proc, not curthread: for
+			 * pdnew(2) the image is a different process than the
+			 * caller.  (kern_setrlimit() targets td->td_proc, which
+			 * would grow the *caller's* stack region.)  imgp->proc
+			 * is P_INEXEC, so setrlimit skips the live-stack resize.
+			 */
+			kern_proc_setrlimit(curthread, p, RLIMIT_STACK,
+			    &rlim_stack);
 		}
 	} else if (sv->sv_maxssiz != NULL) {
 		ssiz = *sv->sv_maxssiz;
@@ -1631,7 +1651,7 @@ exec_map_stack(struct image_params *imgp)
 	    imgp->stack_prot : sv->sv_stackprot;
 	if ((map->flags & MAP_ASLR_STACK) != 0) {
 		stack_addr = round_page((vm_offset_t)p->p_vmspace->vm_daddr +
-		    lim_max(curthread, RLIMIT_DATA));
+		    lim_max(imgp->td, RLIMIT_DATA));
 		find_space = VMFS_ANY_SPACE;
 	} else {
 		stack_addr = sv->sv_usrstack - ssiz;
@@ -1672,7 +1692,7 @@ exec_map_stack(struct image_params *imgp)
 	vm_object_reference(obj);
 	if ((imgp->imgp_flags & IMGP_ASLR_SHARED_PAGE) != 0) {
 		sharedpage_addr = round_page((vm_offset_t)p->p_vmspace->vm_daddr +
-		    lim_max(curthread, RLIMIT_DATA));
+		    lim_max(imgp->td, RLIMIT_DATA));
 
 		error = vm_map_fixed(map, NULL, 0,
 		    sv->sv_maxuser - PAGE_SIZE, PAGE_SIZE,
@@ -2083,7 +2103,8 @@ exec_copyout_strings(struct image_params *imgp, uintptr_t *stack_base)
 		szsigcode = *(sysent->sv_szsigcode);
 		destp -= szsigcode;
 		destp = rounddown2(destp, sizeof(void *));
-		error = copyout(sysent->sv_sigcode, (void *)destp, szsigcode);
+		error = imgp_copyout(imgp, sysent->sv_sigcode, (void *)destp,
+		    szsigcode);
 		if (error != 0)
 			return (error);
 	}
@@ -2096,7 +2117,8 @@ exec_copyout_strings(struct image_params *imgp, uintptr_t *stack_base)
 		destp -= execpath_len;
 		destp = rounddown2(destp, sizeof(void *));
 		imgp->execpathp = (void *)destp;
-		error = copyout(imgp->execpath, imgp->execpathp, execpath_len);
+		error = imgp_copyout(imgp, imgp->execpath, imgp->execpathp,
+		    execpath_len);
 		if (error != 0)
 			return (error);
 	}
@@ -2107,7 +2129,7 @@ exec_copyout_strings(struct image_params *imgp, uintptr_t *stack_base)
 	arc4rand(canary, sizeof(canary), 0);
 	destp -= sizeof(canary);
 	imgp->canary = (void *)destp;
-	error = copyout(canary, imgp->canary, sizeof(canary));
+	error = imgp_copyout(imgp, canary, imgp->canary, sizeof(canary));
 	if (error != 0)
 		return (error);
 	imgp->canarylen = sizeof(canary);
@@ -2119,7 +2141,8 @@ exec_copyout_strings(struct image_params *imgp, uintptr_t *stack_base)
 	destp -= imgp->pagesizeslen;
 	destp = rounddown2(destp, sizeof(void *));
 	imgp->pagesizes = (void *)destp;
-	error = copyout(pagesizes, imgp->pagesizes, imgp->pagesizeslen);
+	error = imgp_copyout(imgp, pagesizes, imgp->pagesizes,
+	    imgp->pagesizeslen);
 	if (error != 0)
 		return (error);
 
@@ -2159,7 +2182,7 @@ exec_copyout_strings(struct image_params *imgp, uintptr_t *stack_base)
 	/*
 	 * Copy out strings - arguments and environment.
 	 */
-	error = copyout(stringp, (void *)ustringp,
+	error = imgp_copyout(imgp, stringp, (void *)ustringp,
 	    ARG_MAX - imgp->args->stringspace);
 	if (error != 0)
 		return (error);
@@ -2168,15 +2191,16 @@ exec_copyout_strings(struct image_params *imgp, uintptr_t *stack_base)
 	 * Fill in "ps_strings" struct for ps, w, etc.
 	 */
 	imgp->argv = vectp;
-	if (suword(&arginfo->ps_argvstr, (long)(intptr_t)vectp) != 0 ||
-	    suword32(&arginfo->ps_nargvstr, argc) != 0)
+	if (imgp_suword(imgp, &arginfo->ps_argvstr,
+	    (long)(intptr_t)vectp) != 0 ||
+	    imgp_suword32(imgp, &arginfo->ps_nargvstr, argc) != 0)
 		return (EFAULT);
 
 	/*
 	 * Fill in argument portion of vector table.
 	 */
 	for (; argc > 0; --argc) {
-		if (suword(vectp++, ustringp) != 0)
+		if (imgp_suword(imgp, vectp++, ustringp) != 0)
 			return (EFAULT);
 		while (*stringp++ != 0)
 			ustringp++;
@@ -2184,19 +2208,20 @@ exec_copyout_strings(struct image_params *imgp, uintptr_t *stack_base)
 	}
 
 	/* a null vector table pointer separates the argp's from the envp's */
-	if (suword(vectp++, 0) != 0)
+	if (imgp_suword(imgp, vectp++, 0) != 0)
 		return (EFAULT);
 
 	imgp->envv = vectp;
-	if (suword(&arginfo->ps_envstr, (long)(intptr_t)vectp) != 0 ||
-	    suword32(&arginfo->ps_nenvstr, envc) != 0)
+	if (imgp_suword(imgp, &arginfo->ps_envstr,
+	    (long)(intptr_t)vectp) != 0 ||
+	    imgp_suword32(imgp, &arginfo->ps_nenvstr, envc) != 0)
 		return (EFAULT);
 
 	/*
 	 * Fill in environment portion of vector table.
 	 */
 	for (; envc > 0; --envc) {
-		if (suword(vectp++, ustringp) != 0)
+		if (imgp_suword(imgp, vectp++, ustringp) != 0)
 			return (EFAULT);
 		while (*stringp++ != 0)
 			ustringp++;
@@ -2204,7 +2229,7 @@ exec_copyout_strings(struct image_params *imgp, uintptr_t *stack_base)
 	}
 
 	/* end of vector table is a null pointer */
-	if (suword(vectp, 0) != 0)
+	if (imgp_suword(imgp, vectp, 0) != 0)
 		return (EFAULT);
 
 	if (imgp->auxargs) {
@@ -2216,6 +2241,55 @@ exec_copyout_strings(struct image_params *imgp, uintptr_t *stack_base)
 	}
 
 	return (0);
+}
+
+/*
+ * Helpers for writing to the target process's userspace.  When
+ * imgp->proc is the current process (normal exec), these are just
+ * wrappers around the standard copyout/suword.  When imgp->proc is a
+ * different (embryonic) process, we write directly into its vmspace
+ * with VM_PROT_WRITE, so the pages are real and process-visible (not
+ * the private VM_PROT_COPY pages a debugger write produces).
+ */
+static ssize_t
+imgp_writemem(const struct image_params *imgp, void *uaddr, void *kaddr,
+    size_t len)
+{
+
+	return (vmspace_iop(curthread, imgp->proc->p_vmspace,
+	    (vm_offset_t)uaddr, kaddr, len, UIO_WRITE,
+	    VM_PROT_WRITE | VM_PROT_READ));
+}
+
+int
+imgp_copyout(const struct image_params *imgp, const void *kaddr, void *uaddr,
+    size_t len)
+{
+
+	if (__predict_true(imgp->proc == curproc))
+		return (copyout(kaddr, uaddr, len));
+	return (imgp_writemem(imgp, uaddr, __DECONST(void *, kaddr), len) ==
+	    (ssize_t)len ? 0 : EFAULT);
+}
+
+int
+imgp_suword(const struct image_params *imgp, void *addr, long word)
+{
+
+	if (__predict_true(imgp->proc == curproc))
+		return (suword(addr, word));
+	return (imgp_writemem(imgp, addr, &word, sizeof(word)) ==
+	    sizeof(word) ? 0 : -1);
+}
+
+int
+imgp_suword32(const struct image_params *imgp, void *addr, int32_t word)
+{
+
+	if (__predict_true(imgp->proc == curproc))
+		return (suword32(addr, word));
+	return (imgp_writemem(imgp, addr, &word, sizeof(word)) ==
+	    sizeof(word) ? 0 : -1);
 }
 
 /*

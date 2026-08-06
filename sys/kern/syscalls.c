@@ -621,4 +621,5 @@ const char *syscallnames[] = {
 	"pdsetschedparam",			/* 612 = pdsetschedparam */
 	"pdsetscheduler",			/* 613 = pdsetscheduler */
 	"pdresetids",			/* 614 = pdresetids */
+	"pdstart",			/* 615 = pdstart */
 };

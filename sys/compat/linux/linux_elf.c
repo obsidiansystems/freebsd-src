@@ -537,7 +537,8 @@ __linuxN(copyout_auxargs)(struct image_params *imgp, uintptr_t base)
 	imgp->auxargs = NULL;
 	KASSERT(pos - aarray <= LINUX_AT_COUNT, ("Too many auxargs"));
 
-	error = copyout(aarray, PTRIN(base), sizeof(*aarray) * LINUX_AT_COUNT);
+	error = imgp_copyout(imgp, aarray, PTRIN(base),
+	    sizeof(*aarray) * LINUX_AT_COUNT);
 	free(aarray, M_TEMP);
 	return (error);
 }

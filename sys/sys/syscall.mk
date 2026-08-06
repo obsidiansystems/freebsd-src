@@ -457,4 +457,5 @@ MIASM =  \
 	pdsetpgid.o \
 	pdsetschedparam.o \
 	pdsetscheduler.o \
-	pdresetids.o
+	pdresetids.o \
+	pdstart.o
