@@ -83,7 +83,7 @@ on termination.
 .Fn pdfork
 can accept the
 .Fa pdflags:
-.Bl -tag -width PD_CLOEXEC
+.Bl -tag -width PD_PROCCTL_CAP
 .It Dv PD_DAEMON
 Instead of the default terminate-on-close behaviour, allow the process to
 live until it is explicitly killed with
@@ -106,6 +106,14 @@ Set close-on-exec on process descriptor.
 .It Dv PD_NOWAITPID
 The parent cannot obtain the child's status with
 .Xr waitpid 2 .
+.It Dv PD_PROCCTL_CAP
+Grant the process descriptor the
+.Dv CAP_PROCCTL
+right, which
+.Xr procctl 2
+with
+.Dv P_PROCDESC
+requires and which is otherwise not granted.
 .El
 .Pp
 The

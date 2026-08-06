@@ -611,7 +611,7 @@ struct sysent freebsd32_sysent[] = {
 	{ .sy_narg = AS(accept4_args), .sy_call = (sy_call_t *)sys_accept4, .sy_auevent = AUE_ACCEPT, .sy_flags = SYF_CAPENABLED, .sy_thrcnt = SY_THR_STATIC },	/* 541 = accept4 */
 	{ .sy_narg = AS(pipe2_args), .sy_call = (sy_call_t *)sys_pipe2, .sy_auevent = AUE_PIPE, .sy_flags = SYF_CAPENABLED, .sy_thrcnt = SY_THR_STATIC },	/* 542 = pipe2 */
 	{ .sy_narg = AS(freebsd32_aio_mlock_args), .sy_call = (sy_call_t *)freebsd32_aio_mlock, .sy_auevent = AUE_AIO_MLOCK, .sy_flags = 0, .sy_thrcnt = SY_THR_STATIC },	/* 543 = freebsd32_aio_mlock */
-	{ .sy_narg = AS(freebsd32_procctl_args), .sy_call = (sy_call_t *)freebsd32_procctl, .sy_auevent = AUE_PROCCTL, .sy_flags = 0, .sy_thrcnt = SY_THR_STATIC },	/* 544 = freebsd32_procctl */
+	{ .sy_narg = AS(freebsd32_procctl_args), .sy_call = (sy_call_t *)freebsd32_procctl, .sy_auevent = AUE_PROCCTL, .sy_flags = SYF_CAPENABLED, .sy_thrcnt = SY_THR_STATIC },	/* 544 = freebsd32_procctl */
 	{ .sy_narg = AS(freebsd32_ppoll_args), .sy_call = (sy_call_t *)freebsd32_ppoll, .sy_auevent = AUE_POLL, .sy_flags = SYF_CAPENABLED, .sy_thrcnt = SY_THR_STATIC },	/* 545 = freebsd32_ppoll */
 	{ .sy_narg = AS(freebsd32_futimens_args), .sy_call = (sy_call_t *)freebsd32_futimens, .sy_auevent = AUE_FUTIMES, .sy_flags = SYF_CAPENABLED, .sy_thrcnt = SY_THR_STATIC },	/* 546 = freebsd32_futimens */
 	{ .sy_narg = AS(freebsd32_utimensat_args), .sy_call = (sy_call_t *)freebsd32_utimensat, .sy_auevent = AUE_FUTIMESAT, .sy_flags = SYF_CAPENABLED, .sy_thrcnt = SY_THR_STATIC },	/* 547 = freebsd32_utimensat */

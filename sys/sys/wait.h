@@ -118,7 +118,8 @@ typedef enum
 	P_JAILID,		/* A zone identifier. */
 	P_CTID,			/* A (process) contract identifier. */
 	P_CPUID,		/* CPU identifier. */
-	P_PSETID		/* Processor set identifier. */
+	P_PSETID,		/* Processor set identifier. */
+	P_PROCDESC		/* A process descriptor; only for procctl(2). */
 } idtype_t;			/* The type of id_t we are using. */
 
 #if __BSD_VISIBLE

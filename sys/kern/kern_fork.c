@@ -131,6 +131,8 @@ sys_pdfork(struct thread *td, struct pdfork_args *uap)
 	filecaps_fill(&fcaps);
 	if ((uap->flags & PD_PTRACE_CAP) == 0)
 		cap_rights_clear(&fcaps.fc_rights, CAP_PTRACE);
+	if ((uap->flags & PD_PROCCTL_CAP) == 0)
+		cap_rights_clear(&fcaps.fc_rights, CAP_PROCCTL);
 	fr.fr_pd_fcaps = &fcaps;
 	AUDIT_ARG_FFLAGS(uap->flags);
 	/*
@@ -236,6 +238,8 @@ sys_pdrfork(struct thread *td, struct pdrfork_args *uap)
 	filecaps_fill(&fcaps);
 	if ((uap->pdflags & PD_PTRACE_CAP) == 0)
 		cap_rights_clear(&fcaps.fc_rights, CAP_PTRACE);
+	if ((uap->pdflags & PD_PROCCTL_CAP) == 0)
+		cap_rights_clear(&fcaps.fc_rights, CAP_PROCCTL);
 	fr.fr_pd_fcaps = &fcaps;
 	error = fork1(td, &fr);
 	if (error == 0) {

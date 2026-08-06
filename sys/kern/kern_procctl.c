@@ -33,6 +33,8 @@
 #include <sys/_unrhdr.h>
 #include <sys/systm.h>
 #include <sys/capsicum.h>
+#include <sys/file.h>
+#include <sys/filedesc.h>
 #include <sys/lock.h>
 #include <sys/malloc.h>
 #include <sys/mman.h>
@@ -40,6 +42,7 @@
 #include <sys/priv.h>
 #include <sys/proc.h>
 #include <sys/procctl.h>
+#include <sys/procdesc.h>
 #include <sys/ptrace.h>
 #include <sys/sx.h>
 #include <sys/syscallsubr.h>
@@ -1012,6 +1015,19 @@ struct procctl_cmd_info {
 	bool copyout_on_error : 1;
 	bool no_nonnull_data : 1;
 	bool need_candebug : 1;
+	/*
+	 * Whether the command may be issued in capability mode against a
+	 * process descriptor.  We err on the side of prohibiting: it is true
+	 * only for commands audited to act solely on the named process, while
+	 * reaping and group operations, which reach beyond it, leave it false.
+	 * Some of these prohibitions may be revisited in the future.
+	 *
+	 * A finer design would limit which commands a given descriptor permits,
+	 * the way cap_ioctls_limit(2) and cap_fcntls_limit(2) restrict the
+	 * ioctl(2) and fcntl(2) requests allowed on a descriptor, rather than
+	 * gating every command behind CAP_PROCCTL plus this one shared bit.
+	 */
+	bool cap_safe : 1;
 	int copyin_sz;
 	int copyout_sz;
 	int (*exec)(struct thread *, struct proc *, void *);
@@ -1021,39 +1037,39 @@ static const struct procctl_cmd_info procctl_cmds_info[] = {
 	[PROC_SPROTECT] =
 	    { .lock_tree = PCTL_SLOCKED, .one_proc = false,
 	      .esrch_is_einval = false, .no_nonnull_data = false,
-	      .need_candebug = false,
+	      .need_candebug = false, .cap_safe = false,
 	      .copyin_sz = sizeof(int), .copyout_sz = 0,
 	      .exec = protect_set, .copyout_on_error = false, },
 	[PROC_REAP_ACQUIRE] =
 	    { .lock_tree = PCTL_XLOCKED, .one_proc = true,
 	      .esrch_is_einval = false, .no_nonnull_data = true,
-	      .need_candebug = false,
+	      .need_candebug = false, .cap_safe = false,
 	      .copyin_sz = 0, .copyout_sz = 0,
 	      .exec = reap_acquire, .copyout_on_error = false, },
 	[PROC_REAP_RELEASE] =
 	    { .lock_tree = PCTL_XLOCKED, .one_proc = true,
 	      .esrch_is_einval = false, .no_nonnull_data = true,
-	      .need_candebug = false,
+	      .need_candebug = false, .cap_safe = false,
 	      .copyin_sz = 0, .copyout_sz = 0,
 	      .exec = reap_release, .copyout_on_error = false, },
 	[PROC_REAP_STATUS] =
 	    { .lock_tree = PCTL_SLOCKED, .one_proc = true,
 	      .esrch_is_einval = false, .no_nonnull_data = false,
-	      .need_candebug = false,
+	      .need_candebug = false, .cap_safe = false,
 	      .copyin_sz = 0,
 	      .copyout_sz = sizeof(struct procctl_reaper_status),
 	      .exec = reap_status, .copyout_on_error = false, },
 	[PROC_REAP_GETPIDS] =
 	    { .lock_tree = PCTL_SLOCKED, .one_proc = true,
 	      .esrch_is_einval = false, .no_nonnull_data = false,
-	      .need_candebug = false,
+	      .need_candebug = false, .cap_safe = false,
 	      .copyin_sz = sizeof(struct procctl_reaper_pids),
 	      .copyout_sz = 0,
 	      .exec = reap_getpids, .copyout_on_error = false, },
 	[PROC_REAP_KILL] =
 	    { .lock_tree = PCTL_SLOCKED, .one_proc = true,
 	      .esrch_is_einval = false, .no_nonnull_data = false,
-	      .need_candebug = false,
+	      .need_candebug = false, .cap_safe = false,
 	      .copyin_sz = sizeof(struct procctl_reaper_kill),
 	      .copyout_sz = sizeof(struct procctl_reaper_kill),
 	      .exec = reap_kill, .copyout_on_error = true,
@@ -1061,109 +1077,109 @@ static const struct procctl_cmd_info procctl_cmds_info[] = {
 	[PROC_TRACE_CTL] =
 	    { .lock_tree = PCTL_SLOCKED, .one_proc = false,
 	      .esrch_is_einval = false, .no_nonnull_data = false,
-	      .need_candebug = true,
+	      .need_candebug = true, .cap_safe = false,
 	      .copyin_sz = sizeof(int), .copyout_sz = 0,
 	      .exec = trace_ctl, .copyout_on_error = false, },
 	[PROC_TRACE_STATUS] =
 	    { .lock_tree = PCTL_UNLOCKED, .one_proc = true,
 	      .esrch_is_einval = false, .no_nonnull_data = false,
-	      .need_candebug = false,
+	      .need_candebug = false, .cap_safe = false,
 	      .copyin_sz = 0, .copyout_sz = sizeof(int),
 	      .exec = trace_status, .copyout_on_error = false, },
 	[PROC_TRAPCAP_CTL] =
 	    { .lock_tree = PCTL_SLOCKED, .one_proc = false,
 	      .esrch_is_einval = false, .no_nonnull_data = false,
-	      .need_candebug = true,
+	      .need_candebug = true, .cap_safe = false,
 	      .copyin_sz = sizeof(int), .copyout_sz = 0,
 	      .exec = trapcap_ctl, .copyout_on_error = false, },
 	[PROC_TRAPCAP_STATUS] =
 	    { .lock_tree = PCTL_UNLOCKED, .one_proc = true,
 	      .esrch_is_einval = false, .no_nonnull_data = false,
-	      .need_candebug = false,
+	      .need_candebug = false, .cap_safe = false,
 	      .copyin_sz = 0, .copyout_sz = sizeof(int),
 	      .exec = trapcap_status, .copyout_on_error = false, },
 	[PROC_PDEATHSIG_CTL] =
 	    { .lock_tree = PCTL_UNLOCKED, .one_proc = true,
 	      .esrch_is_einval = true, .no_nonnull_data = false,
-	      .need_candebug = false,
+	      .need_candebug = false, .cap_safe = false,
 	      .copyin_sz = sizeof(int), .copyout_sz = 0,
 	      .exec = pdeathsig_ctl, .copyout_on_error = false, },
 	[PROC_PDEATHSIG_STATUS] =
 	    { .lock_tree = PCTL_UNLOCKED, .one_proc = true,
 	      .esrch_is_einval = true, .no_nonnull_data = false,
-	      .need_candebug = false,
+	      .need_candebug = false, .cap_safe = false,
 	      .copyin_sz = 0, .copyout_sz = sizeof(int),
 	      .exec = pdeathsig_status, .copyout_on_error = false, },
 	[PROC_ASLR_CTL] =
 	    { .lock_tree = PCTL_UNLOCKED, .one_proc = true,
 	      .esrch_is_einval = false, .no_nonnull_data = false,
-	      .need_candebug = true,
+	      .need_candebug = true, .cap_safe = true,
 	      .copyin_sz = sizeof(int), .copyout_sz = 0,
 	      .exec = aslr_ctl, .copyout_on_error = false, },
 	[PROC_ASLR_STATUS] =
 	    { .lock_tree = PCTL_UNLOCKED, .one_proc = true,
 	      .esrch_is_einval = false, .no_nonnull_data = false,
-	      .need_candebug = false,
+	      .need_candebug = false, .cap_safe = false,
 	      .copyin_sz = 0, .copyout_sz = sizeof(int),
 	      .exec = aslr_status, .copyout_on_error = false, },
 	[PROC_PROTMAX_CTL] =
 	    { .lock_tree = PCTL_UNLOCKED, .one_proc = true,
 	      .esrch_is_einval = false, .no_nonnull_data = false,
-	      .need_candebug = true,
+	      .need_candebug = true, .cap_safe = false,
 	      .copyin_sz = sizeof(int), .copyout_sz = 0,
 	      .exec = protmax_ctl, .copyout_on_error = false, },
 	[PROC_PROTMAX_STATUS] =
 	    { .lock_tree = PCTL_UNLOCKED, .one_proc = true,
 	      .esrch_is_einval = false, .no_nonnull_data = false,
-	      .need_candebug = false,
+	      .need_candebug = false, .cap_safe = false,
 	      .copyin_sz = 0, .copyout_sz = sizeof(int),
 	      .exec = protmax_status, .copyout_on_error = false, },
 	[PROC_STACKGAP_CTL] =
 	    { .lock_tree = PCTL_UNLOCKED, .one_proc = true,
 	      .esrch_is_einval = false, .no_nonnull_data = false,
-	      .need_candebug = true,
+	      .need_candebug = true, .cap_safe = false,
 	      .copyin_sz = sizeof(int), .copyout_sz = 0,
 	      .exec = stackgap_ctl, .copyout_on_error = false, },
 	[PROC_STACKGAP_STATUS] =
 	    { .lock_tree = PCTL_UNLOCKED, .one_proc = true,
 	      .esrch_is_einval = false, .no_nonnull_data = false,
-	      .need_candebug = false,
+	      .need_candebug = false, .cap_safe = false,
 	      .copyin_sz = 0, .copyout_sz = sizeof(int),
 	      .exec = stackgap_status, .copyout_on_error = false, },
 	[PROC_NO_NEW_PRIVS_CTL] =
 	    { .lock_tree = PCTL_SLOCKED, .one_proc = true,
 	      .esrch_is_einval = false, .no_nonnull_data = false,
-	      .need_candebug = true,
+	      .need_candebug = true, .cap_safe = false,
 	      .copyin_sz = sizeof(int), .copyout_sz = 0,
 	      .exec = no_new_privs_ctl, .copyout_on_error = false, },
 	[PROC_NO_NEW_PRIVS_STATUS] =
 	    { .lock_tree = PCTL_UNLOCKED, .one_proc = true,
 	      .esrch_is_einval = false, .no_nonnull_data = false,
-	      .need_candebug = false,
+	      .need_candebug = false, .cap_safe = false,
 	      .copyin_sz = 0, .copyout_sz = sizeof(int),
 	      .exec = no_new_privs_status, .copyout_on_error = false, },
 	[PROC_WXMAP_CTL] =
 	    { .lock_tree = PCTL_UNLOCKED, .one_proc = true,
 	      .esrch_is_einval = false, .no_nonnull_data = false,
-	      .need_candebug = true,
+	      .need_candebug = true, .cap_safe = false,
 	      .copyin_sz = sizeof(int), .copyout_sz = 0,
 	      .exec = wxmap_ctl, .copyout_on_error = false, },
 	[PROC_WXMAP_STATUS] =
 	    { .lock_tree = PCTL_UNLOCKED, .one_proc = true,
 	      .esrch_is_einval = false, .no_nonnull_data = false,
-	      .need_candebug = false,
+	      .need_candebug = false, .cap_safe = false,
 	      .copyin_sz = 0, .copyout_sz = sizeof(int),
 	      .exec = wxmap_status, .copyout_on_error = false, },
 	[PROC_LOGSIGEXIT_CTL] =
 	    { .lock_tree = PCTL_SLOCKED, .one_proc = true,
 	      .esrch_is_einval = false, .no_nonnull_data = false,
-	      .need_candebug = true,
+	      .need_candebug = true, .cap_safe = false,
 	      .copyin_sz = sizeof(int), .copyout_sz = 0,
 	      .exec = logsigexit_ctl, .copyout_on_error = false, },
 	[PROC_LOGSIGEXIT_STATUS] =
 	    { .lock_tree = PCTL_UNLOCKED, .one_proc = true,
 	      .esrch_is_einval = false, .no_nonnull_data = false,
-	      .need_candebug = false,
+	      .need_candebug = false, .cap_safe = false,
 	      .copyin_sz = 0, .copyout_sz = sizeof(int),
 	      .exec = logsigexit_status, .copyout_on_error = false, },
 };
@@ -1180,9 +1196,25 @@ sys_procctl(struct thread *td, struct procctl_args *uap)
 	const struct procctl_cmd_info *cmd_info;
 	int error, error1;
 
-	if (uap->com >= PROC_PROCCTL_MD_MIN)
+	/*
+	 * In capability mode only P_PROCDESC is available: the other identifier
+	 * types name a process through a global namespace the sandbox is not
+	 * supposed to be able to reach into.
+	 */
+	if (IN_CAPABILITY_MODE(td) && uap->idtype != P_PROCDESC)
+		return (ECAPMODE);
+
+	if (uap->com >= PROC_PROCCTL_MD_MIN) {
+		/*
+		 * Machine-dependent commands have not been audited for
+		 * capability mode, so deny them there for now, as with the
+		 * commands below that are not cap_safe.
+		 */
+		if (IN_CAPABILITY_MODE(td))
+			return (ECAPMODE);
 		return (cpu_procctl(td, uap->idtype, uap->id,
 		    uap->com, uap->data));
+	}
 	if (uap->com <= 0 || uap->com >= nitems(procctl_cmds_info))
 		return (EINVAL);
 	cmd_info = &procctl_cmds_info[uap->com];
@@ -1221,18 +1253,38 @@ kern_procctl_single(struct thread *td, struct proc *p, int com, void *data)
 	return (error);
 }
 
+/*
+ * A single-process caller returns on error; P_PGID skips the process on error.
+ */
+static int
+kern_procctl_permit(struct thread *td, struct proc *p,
+    const struct procctl_cmd_info *cmd_info)
+{
+	PROC_LOCK_ASSERT(p, MA_OWNED);
+	return (cmd_info->need_candebug ? p_candebug(td, p) : p_cansee(td, p));
+}
+
 int
 kern_procctl(struct thread *td, idtype_t idtype, id_t id, int com, void *data)
 {
 	struct pgrp *pg;
 	struct proc *p;
+	struct file *fp;
 	const struct procctl_cmd_info *cmd_info;
 	int error, first_error, ok;
 	bool sapblk;
 
 	MPASS(com > 0 && com < nitems(procctl_cmds_info));
 	cmd_info = &procctl_cmds_info[com];
-	if (idtype != P_PID && cmd_info->one_proc)
+	/*
+	 * In capability mode only commands that act solely on the named
+	 * process are permitted; sys_procctl() has already limited the idtype
+	 * to P_PROCDESC.
+	 */
+	if (IN_CAPABILITY_MODE(td) && !cmd_info->cap_safe)
+		return (ECAPMODE);
+	/* P_PID and P_PROCDESC name exactly one process. */
+	if (idtype != P_PID && idtype != P_PROCDESC && cmd_info->one_proc)
 		return (EINVAL);
 
 	sapblk = false;
@@ -1266,12 +1318,27 @@ kern_procctl(struct thread *td, idtype_t idtype, id_t id, int com, void *data)
 				    EINVAL : ESRCH;
 				break;
 			}
-			error = cmd_info->need_candebug ? p_candebug(td, p) :
-			    p_cansee(td, p);
+			error = kern_procctl_permit(td, p, cmd_info);
 		}
 		if (error == 0)
 			error = kern_procctl_single(td, p, com, data);
 		PROC_UNLOCK(p);
+		break;
+	case P_PROCDESC:
+		if (cmd_info->lock_tree == PCTL_UNLOCKED)
+			sx_slock(&proctree_lock);
+		error = fget_procdesc(td, (int)id, &cap_procctl_rights, EINVAL,
+		    &fp, NULL, &p);
+		if (cmd_info->lock_tree == PCTL_UNLOCKED)
+			sx_sunlock(&proctree_lock);
+		if (error == 0) {
+			error = kern_procctl_permit(td, p, cmd_info);
+			if (error == 0)
+				error = kern_procctl_single(td, p, com, data);
+			PROC_UNLOCK(p);
+		}
+		if (fp != NULL)
+			fdrop(fp, td);
 		break;
 	case P_PGID:
 		/*
@@ -1292,8 +1359,7 @@ kern_procctl(struct thread *td, idtype_t idtype, id_t id, int com, void *data)
 			PROC_LOCK(p);
 			if (p->p_state == PRS_NEW ||
 			    p->p_state == PRS_ZOMBIE ||
-			    (cmd_info->need_candebug ? p_candebug(td, p) :
-			    p_cansee(td, p)) != 0) {
+			    kern_procctl_permit(td, p, cmd_info) != 0) {
 				PROC_UNLOCK(p);
 				continue;
 			}

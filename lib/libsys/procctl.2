@@ -27,7 +27,7 @@
 .\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 .\" SUCH DAMAGE.
 .\"
-.Dd April 21, 2025
+.Dd August 6, 2026
 .Dt PROCCTL 2
 .Os
 .Sh NAME
@@ -65,7 +65,32 @@ zero is a shortcut for the calling process ID.
 .It Dv P_PGID
 Control processes belonging to the process group with the ID
 .Fa id .
+.It Dv P_PROCDESC
+Control the process referenced by the process descriptor
+.Fa id .
+The descriptor is required to have the
+.Dv CAP_PROCCTL
+right, which
+.Xr pdfork 2
+grants only when created with the
+.Dv PD_PROCCTL_CAP
+flag.
 .El
+.Pp
+Unlike the other identifier types, which name processes by numbers in a
+global namespace,
+.Dv P_PROCDESC
+names a process by a descriptor the caller already holds.
+It is therefore the only identifier type accepted in capability mode;
+see
+.Xr cap_enter 2 .
+.Pp
+In capability mode, moreover, only the commands that act solely on the named
+process are permitted.
+Commands that reach beyond it, such as the process reaping controls, are
+denied and fail with
+.Er ECAPMODE ;
+this restriction is conservative and may be relaxed in the future.
 .Pp
 The control request to perform is specified by the
 .Fa cmd
@@ -111,6 +136,8 @@ Similarly, executing a set-user-ID or set-group-ID binary ignores this
 control and only honors the
 .Xr elfctl 1
 flag and system-wide policy.
+.Pp
+This request is permitted in capability mode.
 .It Dv PROC_ASLR_STATUS
 Returns the current status of ASLR enablement for the target process.
 The
@@ -127,6 +154,8 @@ If the currently executed image in the process itself has ASLR enabled,
 the
 .Dv PROC_ASLR_ACTIVE
 flag is or-ed with the value listed above.
+.Pp
+This request is not permitted in capability mode.
 .It Dv PROC_LOGSIGEXIT_CTL
 Controls the logging of exits due to signals that would normally cause a core
 dump.
@@ -149,6 +178,8 @@ The logging behavior is delegated to the
 MIB variable
 .Va kern.logsigexit .
 .El
+.Pp
+This request is not permitted in capability mode.
 .It Dv PROC_LOGSIGEXIT_STATUS
 Returns the current status of logging for the target process.
 The
@@ -160,6 +191,8 @@ is written:
 .It Dv PROC_LOGSIGEXIT_CTL_FORCE_DISABLE
 .It Dv PROC_LOGSIGEXIT_CTL_NOFORCE
 .El
+.Pp
+This request is not permitted in capability mode.
 .It Dv PROC_PROTMAX_CTL
 Controls the maximum protection used for
 .Xr mmap 2
@@ -207,6 +240,8 @@ Note that the
 flag takes precedence over this control.
 Executing a binary with this flag set will always use RWX as the implicit
 maximum protection.
+.Pp
+This request is not permitted in capability mode.
 .It Dv PROC_PROTMAX_STATUS
 Returns the current status of the implicit PROT_MAX control for the
 target process.
@@ -224,6 +259,8 @@ If the currently executed image in the process itself has the implicit PROT_MAX
 control enabled, the
 .Dv PROC_PROTMAX_ACTIVE
 flag is or-ed with the value listed above.
+.Pp
+This request is not permitted in capability mode.
 .It Dv PROC_SPROTECT
 Set process protection state.
 This is used to mark a process as protected from being killed if the system
@@ -251,6 +288,8 @@ When used with
 mark all future child processes of each selected process as protected.
 Future child processes will also mark all of their future child processes.
 .El
+.Pp
+This request is not permitted in capability mode.
 .It Dv PROC_REAP_ACQUIRE
 Enable orphaned process reaping for future children of the current process.
 .Pp
@@ -273,11 +312,15 @@ process's reaper.
 After system initialization,
 .Xr init 8
 is the default reaper.
+.Pp
+This request is not permitted in capability mode.
 .It Dv PROC_REAP_RELEASE
 Disable orphaned process reaping for the current process.
 .Pp
 Any processes for whom the current process was the reaper are reassigned to
 the current process's reaper.
+.Pp
+This request is not permitted in capability mode.
 .It Dv PROC_REAP_STATUS
 Provides a consistent snapshot of information about the reaper
 of the specified process,
@@ -332,6 +375,8 @@ The
 returns the pid of one reaper child if there are any processes that can be
 reapead;
 otherwise, it is set to \-1.
+.Pp
+This request is not permitted in capability mode.
 .It Dv PROC_REAP_GETPIDS
 Queries the list of processes that can be reaped
 by the reaper of the specified process.
@@ -405,6 +450,8 @@ The reported process is stopped by a SIGSTOP/SIGTSTP signal.
 .It Dv REAPER_PIDINFO_EXITING
 The reported process is in the process of exiting (but not yet a zombie).
 .El
+.Pp
+This request is not permitted in capability mode.
 .It Dv PROC_REAP_KILL
 Request to deliver a signal to some subset of the descendants of the reaper.
 The
@@ -459,6 +506,8 @@ delivery failed, e.g., due to permission problems.
 If no such process exists, the
 .Fa rk_fpid
 field is set to \-1.
+.Pp
+This request is not permitted in capability mode.
 .It Dv PROC_TRACE_CTL
 Enable or disable tracing of the specified process(es), according to the
 value of the integer argument.
@@ -492,6 +541,8 @@ Same as
 but the setting persists for the process even after
 .Xr execve 2 .
 .El
+.Pp
+This request is not permitted in capability mode.
 .It Dv PROC_TRACE_STATUS
 Returns the current tracing status for the specified process in
 the integer variable pointed to by
@@ -507,6 +558,8 @@ is set to 0.
 If a debugger is attached,
 .Fa data
 is set to the pid of the debugger process.
+.Pp
+This request is not permitted in capability mode.
 .It Dv PROC_TRAPCAP_CTL
 Controls the capability mode sandbox actions for the specified
 sandboxed processes
@@ -567,6 +620,8 @@ signal handler.
 See
 .Xr capsicum 4
 for more information about capability mode.
+.Pp
+This request is not permitted in capability mode.
 .It Dv PROC_TRAPCAP_STATUS
 Return the current status of raising
 .Dv SIGTRAP
@@ -584,6 +639,8 @@ otherwise.
 See the note about sysctl
 .Dv kern.trap_enotcap
 above, which gives independent global control of signal delivery.
+.Pp
+This request is not permitted in capability mode.
 .It Dv PROC_PDEATHSIG_CTL
 Request the delivery of a signal when the parent of the calling
 process exits.
@@ -601,6 +658,8 @@ must point to a value of type
 indicating the signal
 that should be delivered to the caller.
 Use zero to cancel a previously requested signal delivery.
+.Pp
+This request is not permitted in capability mode.
 .It Dv PROC_PDEATHSIG_STATUS
 Query the current signal number that will be delivered when the parent
 of the calling process exits.
@@ -615,6 +674,8 @@ must point to a memory location that can hold a value of type
 .Vt int .
 If signal delivery has not been requested, it will contain zero
 on return.
+.Pp
+This request is not permitted in capability mode.
 .It Dv PROC_STACKGAP_CTL
 Controls stack gaps in the specified process.
 A stack gap is one or more virtual memory pages at the end of the
@@ -662,6 +723,8 @@ If gaps were enabled, they are kept enabled after exec.
 .Pp
 The stack gap state is inherited from the parent on
 .Xr fork 2 .
+.Pp
+This request is not permitted in capability mode.
 .It Dv PROC_STACKGAP_STATUS
 Returns the current stack gap state for the specified process.
 .Fa data
@@ -690,6 +753,8 @@ space constructed by
 However, the controls value can still be inherited by child processes, and
 executing a binary without this flag set will revert to the behavior specified
 by the control.
+.Pp
+This request is not permitted in capability mode.
 .It Dv PROC_NO_NEW_PRIVS_CTL
 Allows one to ignore the set-user-ID and set-group-ID bits on the program
 images activated by
@@ -705,6 +770,8 @@ Request set-user-ID and set-group-ID bits to be ignored.
 .El
 .Pp
 It is not possible to disable this control once it has been enabled.
+.Pp
+This request is not permitted in capability mode.
 .It Dv PROC_NO_NEW_PRIVS_STATUS
 Returns the current status of set-ID bits enablement for the target process.
 The
@@ -715,6 +782,8 @@ following values is written:
 .It Dv PROC_NO_NEW_PRIVS_ENABLE
 .It Dv PROC_NO_NEW_PRIVS_DISABLE
 .El
+.Pp
+This request is not permitted in capability mode.
 .It Dv PROC_WXMAP_CTL
 Controls the creation of mappings with both write and execute permissions
 in a process's address space.
@@ -753,6 +822,8 @@ were enabled in a given process is to set the
 flag and
 .Xr execve 2
 an image.
+.Pp
+This request is not permitted in capability mode.
 .It Dv PROC_WXMAP_STATUS
 Returns the current status of the controls over creation of mappings with
 both write and execute permissions for the specified process.
@@ -777,6 +848,8 @@ it is guaranteed that no such mapping was created since address space
 creation, the
 .Dv PROC_WXORX_ENFORCE
 flag is set in the returned value.
+.Pp
+This request is not permitted in capability mode.
 .El
 .Sh x86 MACHINE-SPECIFIC REQUESTS
 .Bl -tag -width indent
@@ -806,6 +879,8 @@ Only root or a process having the
 .Va PRIV_IO
 privilege can use this option.
 .El
+.Pp
+This request is not permitted in capability mode.
 .It Dv PROC_KPTI_STATUS
 Returns the current KPTI status for the specified process.
 .Fa data
@@ -819,6 +894,8 @@ following values is written:
 The status is or-ed with
 .Va PROC_KPTI_STATUS_ACTIVE
 if KPTI is active for the current address space of the process.
+.Pp
+This request is not permitted in capability mode.
 .El
 .Sh NOTES
 Disabling tracing on a process should not be considered a security
@@ -854,14 +931,52 @@ argument specifies an unsupported command.
 The
 .Fa idtype
 argument specifies an unsupported identifier type.
+.Pp
+The
+.Fa idtype
+argument is
+.Dv P_PROCDESC
+and
+.Fa id
+is a descriptor of a type other than a process descriptor.
 .It Bq Er EPERM
 The calling process does not have permission to perform the requested
 operation on any of the selected processes.
+.It Bq Er ECAPMODE
+The calling process is in capability mode and the
+.Fa idtype
+argument is not
+.Dv P_PROCDESC ,
+or the
+.Fa cmd
+is not one of those permitted in capability mode.
+.It Bq Er EBADF
+The
+.Fa idtype
+argument is
+.Dv P_PROCDESC
+and
+.Fa id
+is not a valid descriptor.
+.It Bq Er ENOTCAPABLE
+The
+.Fa idtype
+argument is
+.Dv P_PROCDESC
+and
+.Fa id
+lacks the
+.Dv CAP_PROCCTL
+right.
 .It Bq Er ESRCH
 No processes matched the requested
 .Fa idtype
 and
 .Fa id .
+A
+.Dv P_PROCDESC
+descriptor also stops matching once the process it referenced has exited and
+been reaped.
 .It Bq Er ESRCH
 No descendant processes can be found matching criteria specified in the
 .Dv PROC_REAP_KILL
@@ -944,6 +1059,7 @@ or invalid signal number.
 .Xr ktrace 2 ,
 .Xr mmap 2 ,
 .Xr mprotect 2 ,
+.Xr pdfork 2 ,
 .Xr ptrace 2 ,
 .Xr wait 2 ,
 .Xr capsicum 4 ,

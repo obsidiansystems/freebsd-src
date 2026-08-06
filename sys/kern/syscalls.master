@@ -3020,7 +3020,7 @@
 		    _In_ _Contains_long_ptr_ struct aiocb *aiocbp
 		);
 	}
-544	AUE_PROCCTL	STD {
+544	AUE_PROCCTL	STD|CAPENABLED {
 		int procctl(
 		    idtype_t idtype,
 		    id_t id,

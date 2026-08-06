@@ -705,6 +705,8 @@ kern_pdopenpid(struct thread *td, pid_t pid, int flags)
 	filecaps_fill(&fcaps);
 	if ((flags & PD_PTRACE_CAP) == 0)
 		cap_rights_clear(&fcaps.fc_rights, CAP_PTRACE);
+	if ((flags & PD_PROCCTL_CAP) == 0)
+		cap_rights_clear(&fcaps.fc_rights, CAP_PROCCTL);
 
 	sx_xlock(&proctree_lock);
 	error = pdopenpid1(td, pid, &pdf, fp);
