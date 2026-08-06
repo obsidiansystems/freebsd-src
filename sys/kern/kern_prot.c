@@ -441,13 +441,60 @@ struct setpgid_args {
 	int	pgid;		/* target pgrp id */
 };
 #endif
+/*
+ * Core of setpgid(2): move targp into the process group pgid (0 selects a new
+ * group whose id is targp's own pid), enforcing the session and group-leader
+ * rules.  The caller holds proctree_lock, has already validated targp as a
+ * legitimate target in curp's session, and supplies a preallocated group in
+ * *newpgrpp; when a fresh group is created that pgrp is consumed and *newpgrpp
+ * is set to NULL.  A return of ERESTART asks the caller to drop the lock and
+ * retry.
+ *
+ * Shared by setpgid(2) and pdsetpgid(2), which differ only in how they name
+ * and acquire targp.
+ */
+int
+do_setpgid(struct proc *curp, struct proc *targp, pid_t pgid,
+    struct pgrp **newpgrpp)
+{
+	struct pgrp *pgrp;
+	int error;
+
+	sx_assert(&proctree_lock, SX_XLOCKED);
+
+	if (SESS_LEADER(targp))
+		return (EPERM);
+	if (pgid == 0)
+		pgid = targp->p_pid;
+	if ((pgrp = pgfind(pgid)) == NULL) {
+		if (pgid == targp->p_pid) {
+			error = enterpgrp(targp, pgid, *newpgrpp, NULL);
+			if (error == 0)
+				*newpgrpp = NULL;
+		} else
+			error = EPERM;
+	} else {
+		if (pgrp == targp->p_pgrp) {
+			PGRP_UNLOCK(pgrp);
+			return (0);
+		}
+		if (pgrp->pg_id != targp->p_pid &&
+		    pgrp->pg_session != curp->p_session) {
+			PGRP_UNLOCK(pgrp);
+			return (EPERM);
+		}
+		PGRP_UNLOCK(pgrp);
+		error = enterthispgrp(targp, pgrp);
+	}
+	return (error);
+}
+
 /* ARGSUSED */
 int
 sys_setpgid(struct thread *td, struct setpgid_args *uap)
 {
 	struct proc *curp = td->td_proc;
 	struct proc *targp;	/* target process */
-	struct pgrp *pgrp;	/* target pgrp */
 	int error;
 	struct pgrp *newpgrp;
 
@@ -488,34 +535,7 @@ again:
 		PROC_UNLOCK(targp);
 	} else
 		targp = curp;
-	if (SESS_LEADER(targp)) {
-		error = EPERM;
-		goto done;
-	}
-	if (uap->pgid == 0)
-		uap->pgid = targp->p_pid;
-	if ((pgrp = pgfind(uap->pgid)) == NULL) {
-		if (uap->pgid == targp->p_pid) {
-			error = enterpgrp(targp, uap->pgid, newpgrp,
-			    NULL);
-			if (error == 0)
-				newpgrp = NULL;
-		} else
-			error = EPERM;
-	} else {
-		if (pgrp == targp->p_pgrp) {
-			PGRP_UNLOCK(pgrp);
-			goto done;
-		}
-		if (pgrp->pg_id != targp->p_pid &&
-		    pgrp->pg_session != curp->p_session) {
-			PGRP_UNLOCK(pgrp);
-			error = EPERM;
-			goto done;
-		}
-		PGRP_UNLOCK(pgrp);
-		error = enterthispgrp(targp, pgrp);
-	}
+	error = do_setpgid(curp, targp, uap->pgid, &newpgrp);
 done:
 	KASSERT(error == 0 || newpgrp != NULL,
 	    ("setpgid failed and newpgrp is NULL"));

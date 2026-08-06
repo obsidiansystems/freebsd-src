@@ -4381,13 +4381,24 @@ pwd_chroot(struct thread *td, struct vnode *vp)
 void
 pwd_chdir(struct thread *td, struct vnode *vp)
 {
+
+	pwd_chdir_proc(td->td_proc, vp);
+}
+
+/*
+ * As pwd_chdir(), but for an arbitrary process: pdchdir(2) sets the working
+ * directory of an embryonic process on behalf of its creator.
+ */
+void
+pwd_chdir_proc(struct proc *p, struct vnode *vp)
+{
 	struct pwddesc *pdp;
 	struct pwd *newpwd, *oldpwd;
 
 	VNPASS(vp->v_usecount > 0, vp);
 
 	newpwd = pwd_alloc();
-	pdp = td->td_proc->p_pd;
+	pdp = p->p_pd;
 	PWDDESC_XLOCK(pdp);
 	oldpwd = PWDDESC_XLOCKED_LOAD_PWD(pdp);
 	newpwd->pwd_cdir = vp;

@@ -1181,6 +1181,8 @@ int	cr_bsd_visible(struct ucred *u1, struct ucred *u2);
 int	cr_cansee(struct ucred *u1, struct ucred *u2);
 int	cr_canseesocket(struct ucred *cred, struct socket *so);
 int	cr_cansignal(struct ucred *cred, struct proc *proc, int signum);
+int	do_setpgid(struct proc *curp, struct proc *targp, pid_t pgid,
+	    struct pgrp **newpgrpp);
 int	enterpgrp(struct proc *p, pid_t pgid, struct pgrp *pgrp,
 	    struct session *sess);
 int	enterthispgrp(struct proc *p, struct pgrp *pgrp);

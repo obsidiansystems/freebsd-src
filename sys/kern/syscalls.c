@@ -613,4 +613,12 @@ const char *syscallnames[] = {
 	"pddupfd",			/* 604 = pddupfd */
 	"pdsetfd",			/* 605 = pdsetfd */
 	"pdexec",			/* 606 = pdexec */
+	"pdsetfdrange",			/* 607 = pdsetfdrange */
+	"pdsetsigmask",			/* 608 = pdsetsigmask */
+	"pdsetsigign",			/* 609 = pdsetsigign */
+	"pdchdir",			/* 610 = pdchdir */
+	"pdsetpgid",			/* 611 = pdsetpgid */
+	"pdsetschedparam",			/* 612 = pdsetschedparam */
+	"pdsetscheduler",			/* 613 = pdsetscheduler */
+	"pdresetids",			/* 614 = pdresetids */
 };

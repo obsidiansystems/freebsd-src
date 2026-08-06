@@ -449,4 +449,12 @@ MIASM =  \
 	pdopenpid.o \
 	pddupfd.o \
 	pdsetfd.o \
-	pdexec.o
+	pdexec.o \
+	pdsetfdrange.o \
+	pdsetsigmask.o \
+	pdsetsigign.o \
+	pdchdir.o \
+	pdsetpgid.o \
+	pdsetschedparam.o \
+	pdsetscheduler.o \
+	pdresetids.o

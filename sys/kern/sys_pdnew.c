@@ -108,6 +108,71 @@ procdesc_find(struct thread *td, int pdfd, const cap_rights_t *cap_rights,
 }
 
 /*
+ * Reset an embryonic process's effective ids to its real ids.
+ *
+ * This is seteuid(getuid()) and setegid(getgid()) applied to a process that
+ * cannot run them itself.  It has to happen before pdexec(2), because the
+ * access check for the image is made against the credential in force at the
+ * time: dropping privilege afterwards would let a caller run a file that the
+ * dropped-to identity could not, which is the opposite of what the request
+ * means.  Nothing runs in an embryo between the two calls, so ordering them
+ * is enough; it does not have to be a mode of the exec itself.
+ *
+ * No privilege check is needed.  The target is always the process's own real
+ * ids, which seteuid(2) and setegid(2) permit unconditionally.
+ */
+static int
+pdresetids_proc(struct proc *p2)
+{
+	struct ucred *newcred, *oldcred;
+	struct uidinfo *euip;
+	uid_t ruid;
+	gid_t rgid;
+	int error;
+
+	/*
+	 * The embryo is not running and no one else holds it, so its
+	 * credential is stable and can be read before taking the lock --
+	 * which uifind() requires, as it may sleep.
+	 */
+	ruid = p2->p_ucred->cr_ruid;
+	rgid = p2->p_ucred->cr_rgid;
+
+	newcred = crget();
+	euip = uifind(ruid);
+	PROC_LOCK(p2);
+	oldcred = crcopysafe(p2, newcred);
+
+#ifdef MAC
+	error = mac_cred_check_seteuid(oldcred, ruid);
+	if (error == 0)
+		error = mac_cred_check_setegid(oldcred, rgid);
+	if (error != 0) {
+		PROC_UNLOCK(p2);
+		uifree(euip);
+		crfree(newcred);
+		return (error);
+	}
+#else
+	error = 0;
+#endif
+
+	if (oldcred->cr_uid != ruid) {
+		change_euid(newcred, euip);
+		setsugid(p2);
+	}
+	if (oldcred->cr_gid != rgid) {
+		change_egid(newcred, rgid);
+		setsugid(p2);
+	}
+	proc_set_cred(p2, newcred);
+	PROC_UNLOCK(p2);
+	uifree(euip);
+	crfree(oldcred);
+	return (error);
+}
+
+/*
  * kern_pdnew: allocate an embryonic process.
  *
  * The process is created with no address space and no image: a bare process
@@ -659,4 +724,460 @@ sys_pdexec(struct thread *td, struct pdexec_args *uap)
 
 	td->td_retval[0] = 0;
 	return (0);
+}
+
+/*
+ * Install a range of the caller's descriptors into an embryonic process at
+ * the same descriptor numbers: the bulk form of pdsetfd(2).
+ *
+ * fork(2)/execve(2) forces an inherit-everything-then-close model, where the
+ * child begins with a copy of the whole table and the unwanted entries are
+ * closed afterwards.  Here inheritance is opt-in: the caller names the range
+ * it wants, and nothing else appears.  Consequently an embryo's descriptor
+ * table only ever grows, and there is no operation to remove an entry from
+ * another process's table.
+ *
+ * Descriptors marked close-on-exec are skipped, so what is copied is what
+ * would have survived an execve(2); callers emulating those semantics need
+ * not filter the range themselves.  Unused descriptors within the range are
+ * skipped rather than being an error, since a range is a convenience for the
+ * caller and not an assertion about which descriptors it holds.
+ *
+ * Capability rights are preserved per descriptor, as pdsetfd(2) does.
+ */
+int
+sys_pdsetfdrange(struct thread *td, struct pdsetfdrange_args *uap)
+{
+	struct filedesc *fdp;
+	struct proc *p;
+	struct file *fp, *fp_pd;
+	struct filecaps fcaps;
+	cap_rights_t rights;
+	uint8_t fdflags;
+	u_int fd, highfd;
+	bool restricted;
+	int error, lastfile;
+
+	if (uap->flags != 0)
+		return (EINVAL);
+	if (uap->highfd < uap->lowfd)
+		return (EINVAL);
+
+	error = procdesc_find(td, uap->procfd,
+	    cap_rights_init(&rights, CAP_PDSETFD), &p, &fp_pd);
+	if (error != 0)
+		return (error);
+
+	/* Must be an embryonic (P_INEXEC, PRS_NEW) process. */
+	if (p->p_state != PRS_NEW || (p->p_flag & P_INEXEC) == 0) {
+		PROC_UNLOCK(p);
+		fdrop(fp_pd, td);
+		return (EINVAL);
+	}
+	restricted = (p->p_flag & P_SUGID) != 0 ||
+	    ((p->p_ucred->cr_flags & CRED_FLAG_CAPMODE) == 0 &&
+	    (td->td_ucred->cr_uid != p->p_ucred->cr_uid ||
+	    td->td_ucred->cr_gid != p->p_ucred->cr_gid));
+	PROC_UNLOCK(p);
+
+	/*
+	 * Clamp to the caller's highest open descriptor so that the common
+	 * "copy everything from here up" idiom does not walk to UINT_MAX.
+	 */
+	fdp = td->td_proc->p_fd;
+	FILEDESC_SLOCK(fdp);
+	lastfile = fdlastfile(fdp);
+	FILEDESC_SUNLOCK(fdp);
+	if (lastfile < 0) {
+		fdrop(fp_pd, td);
+		return (0);
+	}
+	highfd = MIN(uap->highfd, (u_int)lastfile);
+
+	for (fd = uap->lowfd; fd <= highfd; fd++) {
+		error = fget_cap(td, fd, &cap_no_rights, &fdflags, &fp,
+		    &fcaps);
+		if (error != 0) {
+			/* Not open: a gap in the range, not a failure. */
+			error = 0;
+			continue;
+		}
+		/*
+		 * Skip descriptors a fork()+exec() child would not inherit:
+		 * close-on-fork ones never survive the fork, and close-on-exec
+		 * ones are dropped by the pdexec(2) that follows.  (A file action
+		 * that dup2s such a descriptor is realised separately, through
+		 * pdsetfd(2), so it is unaffected by this.)
+		 */
+		if ((fdflags & (UF_EXCLOSE | UF_FOCLOSE)) != 0) {
+			fdrop(fp, td);
+			filecaps_free(&fcaps);
+			continue;
+		}
+		/* See sys_pdsetfd(): same restriction on descriptors 0-2. */
+		if (restricted && fd <= 2 && fdesc_is_unsafe(fp)) {
+			fdrop(fp, td);
+			filecaps_free(&fcaps);
+			error = EPERM;
+			break;
+		}
+		error = finstall_at(td, p, fp, fd, 0, &fcaps);
+		fdrop(fp, td);
+		if (error != 0) {
+			filecaps_free(&fcaps);
+			break;
+		}
+	}
+
+	fdrop(fp_pd, td);
+	return (error);
+}
+
+/*
+ * Configuring an embryonic process.
+ *
+ * pdnew(2) deliberately gives the new process a clean slate: an empty
+ * descriptor table, default signal dispositions, nothing blocked.  Anything
+ * a caller wants beyond that it must ask for, which is what these calls are
+ * for.  They exist because the state in question belongs to a process that
+ * cannot run code of its own, so the usual self-directed syscalls
+ * (sigprocmask(2), sigaction(2), fchdir(2)) have nothing to run in.
+ *
+ * A caller emulating fork(2)/execve(2) inheritance -- posix_spawn(3), say --
+ * uses these to reconstruct explicitly whatever that model would have
+ * conferred implicitly.
+ *
+ * All of them require CAP_PDSETFD and, like pdsetfd(2), only apply to a
+ * process that has not been started yet.
+ */
+
+/*
+ * Resolve a procdesc to an embryo, checking it is still unstarted.  On
+ * success the process is returned unlocked with *fpp holding a reference the
+ * caller must fdrop(); *restrictedp reports whether descriptor installation
+ * into it would be restricted (see sys_pdsetfd()).
+ */
+static int
+pdconf_find(struct thread *td, int pdfd, struct proc **pp, struct file **fpp)
+{
+	cap_rights_t rights;
+	struct proc *p;
+	int error;
+
+	error = procdesc_find(td, pdfd, cap_rights_init(&rights, CAP_PDSETFD),
+	    &p, fpp);
+	if (error != 0)
+		return (error);
+	if (p->p_state != PRS_NEW || (p->p_flag & P_INEXEC) == 0) {
+		PROC_UNLOCK(p);
+		fdrop(*fpp, td);
+		*fpp = NULL;
+		return (EINVAL);
+	}
+	*pp = p;
+	return (0);
+}
+
+/*
+ * Set the signal mask of an embryonic process.
+ *
+ * A process created by pdnew(2) blocks nothing, so a caller wanting the
+ * fork(2) behaviour of inheriting its own mask must say so.  SIGKILL and
+ * SIGSTOP cannot be blocked, as for sigprocmask(2).
+ */
+int
+sys_pdsetsigmask(struct thread *td, struct pdsetsigmask_args *uap)
+{
+	struct proc *p;
+	struct file *fp_pd;
+	struct thread *td2;
+	sigset_t mask;
+	int error;
+
+	error = copyin(uap->mask, &mask, sizeof(mask));
+	if (error != 0)
+		return (error);
+	SIG_CANTMASK(mask);
+
+	error = pdconf_find(td, uap->procfd, &p, &fp_pd);
+	if (error != 0)
+		return (error);
+
+	/*
+	 * The embryo is single-threaded and not running, so its mask can be
+	 * assigned directly; there is no signal delivery to reconsider.
+	 */
+	td2 = FIRST_THREAD_IN_PROC(p);
+	td2->td_sigmask = mask;
+	PROC_UNLOCK(p);
+	fdrop(fp_pd, td);
+	return (0);
+}
+
+/*
+ * Set signals to SIG_IGN in an embryonic process.
+ *
+ * execve(2) leaves ignored signals ignored while resetting caught ones to
+ * their default; pdnew(2) has no prior program to inherit dispositions from,
+ * so everything starts at SIG_DFL.  This restores the ignored ones.  Signals
+ * absent from the set keep their default disposition; SIGKILL and SIGSTOP are
+ * silently skipped, as they cannot be ignored.
+ */
+int
+sys_pdsetsigign(struct thread *td, struct pdsetsigign_args *uap)
+{
+	struct proc *p;
+	struct file *fp_pd;
+	struct sigacts *ps;
+	sigset_t ign;
+	int error, sig;
+
+	error = copyin(uap->ign, &ign, sizeof(ign));
+	if (error != 0)
+		return (error);
+
+	error = pdconf_find(td, uap->procfd, &p, &fp_pd);
+	if (error != 0)
+		return (error);
+
+	ps = p->p_sigacts;
+	mtx_lock(&ps->ps_mtx);
+	for (sig = 1; sig <= _SIG_MAXSIG; sig++) {
+		if (!SIGISMEMBER(ign, sig))
+			continue;
+		if (sig == SIGKILL || sig == SIGSTOP)
+			continue;
+		ps->ps_sigact[_SIG_IDX(sig)] = SIG_IGN;
+		/*
+		 * Mirror the bookkeeping kern_sigaction() does for SIG_IGN:
+		 * SIGCONT stays out of ps_sigignore so that it can still
+		 * restart the process.
+		 */
+		if (sig != SIGCONT)
+			SIGADDSET(ps->ps_sigignore, sig);
+		SIGDELSET(ps->ps_sigcatch, sig);
+		if (sig == SIGCHLD)
+			ps->ps_flag |= PS_CLDSIGIGN;
+	}
+	mtx_unlock(&ps->ps_mtx);
+	PROC_UNLOCK(p);
+	fdrop(fp_pd, td);
+	return (0);
+}
+
+/*
+ * Set the working directory of an embryonic process to the directory named
+ * by a descriptor of the caller.
+ *
+ * The lookup and the permission check are the caller's, exactly as they
+ * would be for fchdir(2): a caller can only place the new process somewhere
+ * it could itself have moved to.
+ */
+int
+sys_pdchdir(struct thread *td, struct pdchdir_args *uap)
+{
+	struct proc *p;
+	struct file *fp_pd, *fp;
+	struct vnode *vp, *tdp;
+	struct mount *mp;
+	uint8_t fdflags;
+	int error;
+
+	error = getvnode_path(td, uap->dirfd, &cap_fchdir_rights, &fdflags,
+	    &fp);
+	if (error != 0)
+		return (error);
+	if ((fdflags & UF_RESOLVE_BENEATH) != 0) {
+		fdrop(fp, td);
+		return (ENOTCAPABLE);
+	}
+	vp = fp->f_vnode;
+	vrefact(vp);
+	fdrop(fp, td);
+
+	vn_lock(vp, LK_SHARED | LK_RETRY);
+	AUDIT_ARG_VNODE1(vp);
+	error = change_dir(vp, td);
+	/* Cross into whatever is mounted here, as fchdir(2) does. */
+	while (error == 0 && (mp = vp->v_mountedhere) != NULL) {
+		if (vfs_busy(mp, 0))
+			continue;
+		error = VFS_ROOT(mp, LK_SHARED, &tdp);
+		vfs_unbusy(mp);
+		if (error != 0)
+			break;
+		vput(vp);
+		vp = tdp;
+	}
+	if (error != 0) {
+		vput(vp);
+		return (error);
+	}
+	VOP_UNLOCK(vp);
+
+	error = pdconf_find(td, uap->procfd, &p, &fp_pd);
+	if (error != 0) {
+		vrele(vp);
+		return (error);
+	}
+	PROC_UNLOCK(p);
+	/* Consumes the reference taken above. */
+	pwd_chdir_proc(p, vp);
+	fdrop(fp_pd, td);
+	return (0);
+}
+
+/*
+ * Set the process group of an embryonic process.
+ *
+ * This is setpgid(2) aimed at a process that cannot call it for itself, and
+ * it applies the same rules: the target may not be a session leader, a
+ * pgid of zero means the target's own pid, joining an existing group
+ * requires that group to be in the caller's session, and creating one is
+ * only allowed under the target's own pid.
+ *
+ * It differs from setpgid(2) in dropping the P_EXEC check.  That check stops
+ * a parent from moving a child that has already replaced its image, on the
+ * grounds that the child is now a different program which may have made its
+ * own arrangements.  An embryo has loaded an image but has never run an
+ * instruction of it, so there are no arrangements to disturb; the creator is
+ * still the only party that has ever acted on the process.  Without this,
+ * POSIX_SPAWN_SETPGROUP would be unimplementable here, since pdnew(2) loads
+ * the image up front and so sets P_EXEC before the caller can ask.
+ */
+int
+sys_pdsetpgid(struct thread *td, struct pdsetpgid_args *uap)
+{
+	struct proc *curp = td->td_proc;
+	struct proc *p;
+	struct file *fp_pd;
+	struct pgrp *newpgrp;
+	pid_t pgid;
+	int error;
+
+	pgid = uap->pgid;
+	if (pgid < 0)
+		return (EINVAL);
+
+	newpgrp = uma_zalloc(pgrp_zone, M_WAITOK);
+again:
+	error = pdconf_find(td, uap->procfd, &p, &fp_pd);
+	if (error != 0) {
+		uma_zfree(pgrp_zone, newpgrp);
+		return (error);
+	}
+	PROC_UNLOCK(p);
+
+	sx_xlock(&proctree_lock);
+	/*
+	 * The embryo must be in the caller's session, which it inherited at
+	 * creation.  The pid-based target validation setpgid(2) performs --
+	 * inferior(), p_cansee(), and the P_EXEC "already exec'd" gate -- does
+	 * not apply here: the process is named by a descriptor the caller
+	 * holds, and an embryo has by definition not yet exec'd.  The remaining
+	 * setpgid(2) rules are identical, so defer to the shared core.
+	 */
+	if (p->p_pgrp == NULL || p->p_session != curp->p_session) {
+		error = EPERM;
+		goto done;
+	}
+	error = do_setpgid(curp, p, pgid, &newpgrp);
+done:
+	KASSERT(error == 0 || newpgrp != NULL,
+	    ("pdsetpgid failed and newpgrp is NULL"));
+	sx_xunlock(&proctree_lock);
+	fdrop(fp_pd, td);
+	if (error == ERESTART)
+		goto again;
+	uma_zfree(pgrp_zone, newpgrp);
+	return (error);
+}
+
+/*
+ * Set the scheduling parameters, and optionally the scheduling policy, of an
+ * embryonic process.
+ *
+ * These are sched_setparam(2) and sched_setscheduler(2) aimed at a process
+ * that cannot call them for itself.  Both of those already accept a pid
+ * other than the caller's and apply p_cansched(9) to it, so the permission
+ * model is unchanged; only the way the target is named differs.  Setting a
+ * policy additionally requires PRIV_SCHED_SETPOLICY, as it does there.
+ *
+ * An embryo is single-threaded, so the process's only thread is the one
+ * configured -- matching what sched_setparam(2) does when given a pid, and
+ * what the new program will see when it starts.
+ */
+int
+sys_pdsetschedparam(struct thread *td, struct pdsetschedparam_args *uap)
+{
+	struct sched_param param;
+	struct proc *p;
+	struct file *fp_pd;
+	int error;
+
+	error = copyin(uap->param, &param, sizeof(param));
+	if (error != 0)
+		return (error);
+
+	error = pdconf_find(td, uap->procfd, &p, &fp_pd);
+	if (error != 0)
+		return (error);
+
+	error = kern_sched_setparam(td, FIRST_THREAD_IN_PROC(p), &param);
+	PROC_UNLOCK(p);
+	fdrop(fp_pd, td);
+	return (error);
+}
+
+int
+sys_pdsetscheduler(struct thread *td, struct pdsetscheduler_args *uap)
+{
+	struct sched_param param;
+	struct proc *p;
+	struct file *fp_pd;
+	int error;
+
+	error = copyin(uap->param, &param, sizeof(param));
+	if (error != 0)
+		return (error);
+
+	error = pdconf_find(td, uap->procfd, &p, &fp_pd);
+	if (error != 0)
+		return (error);
+
+	error = kern_sched_setscheduler(td, FIRST_THREAD_IN_PROC(p),
+	    uap->policy, &param);
+	PROC_UNLOCK(p);
+	fdrop(fp_pd, td);
+	return (error);
+}
+
+/*
+ * pdresetids: drop an embryonic process to its real user and group ids.
+ *
+ * This is what POSIX_SPAWN_RESETIDS asks for, applied from the outside.
+ */
+int
+sys_pdresetids(struct thread *td, struct pdresetids_args *uap)
+{
+	struct proc *p;
+	struct file *fp_pd;
+	cap_rights_t rights;
+	int error;
+
+	error = procdesc_find(td, uap->procfd,
+	    cap_rights_init(&rights, CAP_PDSETFD), &p, &fp_pd);
+	if (error != 0)
+		return (error);
+
+	if (p->p_state != PRS_NEW || (p->p_flag & P_INEXEC) == 0) {
+		PROC_UNLOCK(p);
+		fdrop(fp_pd, td);
+		return (EINVAL);
+	}
+	PROC_UNLOCK(p);
+
+	error = pdresetids_proc(p);
+	fdrop(fp_pd, td);
+	return (error);
 }

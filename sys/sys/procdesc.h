@@ -129,10 +129,16 @@ int	 fget_procdesc(struct thread *td, int pfd,
 
 #include <sys/cdefs.h>
 #include <sys/_types.h>
+#include <sys/_sigset.h>
 
 #ifndef _PID_T_DECLARED
 typedef	__pid_t		pid_t;
 #define	_PID_T_DECLARED
+#endif
+
+#ifndef _SIGSET_T_DECLARED
+#define	_SIGSET_T_DECLARED
+typedef	__sigset_t	sigset_t;
 #endif
 
 struct rusage;
@@ -143,6 +149,7 @@ struct rusage;
 __BEGIN_DECLS
 struct __wrusage;
 struct __siginfo;
+struct sched_param;
 
 pid_t	 pdfork(int *, int);
 pid_t	 pdrfork(int *, int, int);
@@ -154,6 +161,14 @@ int	 pddupfd(int, int, int);
 pid_t	 pdrfork_thread(int *, int, int, void *, int (*)(void *), void *);
 int	 pdexec(int, int, char **, char **, int);
 int	 pdsetfd(int, int, int);
+int	 pdresetids(int);
+int	 pdsetfdrange(int, u_int, u_int, int);
+int	 pdsetsigmask(int, const sigset_t *);
+int	 pdsetsigign(int, const sigset_t *);
+int	 pdchdir(int, int);
+int	 pdsetpgid(int, pid_t);
+int	 pdsetschedparam(int, const struct sched_param *);
+int	 pdsetscheduler(int, int, const struct sched_param *);
 __END_DECLS
 
 #endif /* _KERNEL */

@@ -546,4 +546,12 @@
 #define	SYS_pddupfd	604
 #define	SYS_pdsetfd	605
 #define	SYS_pdexec	606
-#define	SYS_MAXSYSCALL	607
+#define	SYS_pdsetfdrange	607
+#define	SYS_pdsetsigmask	608
+#define	SYS_pdsetsigign	609
+#define	SYS_pdchdir	610
+#define	SYS_pdsetpgid	611
+#define	SYS_pdsetschedparam	612
+#define	SYS_pdsetscheduler	613
+#define	SYS_pdresetids	614
+#define	SYS_MAXSYSCALL	615

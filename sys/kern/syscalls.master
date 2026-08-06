@@ -3459,4 +3459,54 @@
 		    int flags
 		);
 	}
+607	AUE_NULL	STD|CAPENABLED {
+		int pdsetfdrange(
+		    int procfd,
+		    u_int lowfd,
+		    u_int highfd,
+		    int flags
+		);
+	}
+608	AUE_NULL	STD|CAPENABLED {
+		int pdsetsigmask(
+		    int procfd,
+		    _In_ const sigset_t *mask
+		);
+	}
+609	AUE_NULL	STD|CAPENABLED {
+		int pdsetsigign(
+		    int procfd,
+		    _In_ const sigset_t *ign
+		);
+	}
+610	AUE_NULL	STD|CAPENABLED {
+		int pdchdir(
+		    int procfd,
+		    int dirfd
+		);
+	}
+611	AUE_NULL	STD|CAPENABLED {
+		int pdsetpgid(
+		    int procfd,
+		    pid_t pgid
+		);
+	}
+612	AUE_NULL	STD|CAPENABLED {
+		int pdsetschedparam(
+		    int procfd,
+		    _In_ const struct sched_param *param
+		);
+	}
+613	AUE_NULL	STD|CAPENABLED {
+		int pdsetscheduler(
+		    int procfd,
+		    int policy,
+		    _In_ const struct sched_param *param
+		);
+	}
+614	AUE_NULL	STD|CAPENABLED {
+		int pdresetids(
+		    int procfd
+		);
+	}
 ; vim: syntax=off
