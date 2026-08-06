@@ -259,13 +259,13 @@ linux_ptrace(struct thread *td, struct linux_ptrace_args *uap)
 	case PTRACE_POKETEXT:
 	case PTRACE_POKEDATA:
 	case PTRACE_KILL:
-		error = kern_ptrace(td, req, pid, addr, uap->data);
+		error = kern_ptrace(td, false, req, pid, addr, uap->data);
 		break;
 	case PTRACE_PEEKTEXT:
 	case PTRACE_PEEKDATA: {
 		/* need to preserve return value */
 		int rval = td->td_retval[0];
-		error = kern_ptrace(td, req, pid, addr, 0);
+		error = kern_ptrace(td, false, req, pid, addr, 0);
 		if (error == 0)
 			error = copyout(td->td_retval, (void *)uap->data,
 			    sizeof(l_int));
@@ -273,20 +273,20 @@ linux_ptrace(struct thread *td, struct linux_ptrace_args *uap)
 		break;
 	}
 	case PTRACE_DETACH:
-		error = kern_ptrace(td, PT_DETACH, pid, (void *)1,
+		error = kern_ptrace(td, false, PT_DETACH, pid, (void *)1,
 		     map_signum(uap->data));
 		break;
 	case PTRACE_SINGLESTEP:
 	case PTRACE_CONT:
-		error = kern_ptrace(td, req, pid, (void *)1,
+		error = kern_ptrace(td, false, req, pid, (void *)1,
 		     map_signum(uap->data));
 		break;
 	case PTRACE_ATTACH:
-		error = kern_ptrace(td, PT_ATTACH, pid, addr, uap->data);
+		error = kern_ptrace(td, false, PT_ATTACH, pid, addr, uap->data);
 		break;
 	case PTRACE_GETREGS:
 		/* Linux is using data where FreeBSD is using addr */
-		error = kern_ptrace(td, PT_GETREGS, pid, &u.bsd_reg, 0);
+		error = kern_ptrace(td, false, PT_GETREGS, pid, &u.bsd_reg, 0);
 		if (error == 0) {
 			map_regs_to_linux(&u.bsd_reg, &r.reg);
 			error = copyout(&r.reg, (void *)uap->data,
@@ -303,7 +303,8 @@ linux_ptrace(struct thread *td, struct linux_ptrace_args *uap)
 		break;
 	case PTRACE_GETFPREGS:
 		/* Linux is using data where FreeBSD is using addr */
-		error = kern_ptrace(td, PT_GETFPREGS, pid, &u.bsd_fpreg, 0);
+		error = kern_ptrace(td, false, PT_GETFPREGS, pid,
+		    &u.bsd_fpreg, 0);
 		if (error == 0) {
 			map_fpregs_to_linux(&u.bsd_fpreg, &r.fpreg);
 			error = copyout(&r.fpreg, (void *)uap->data,
@@ -315,7 +316,7 @@ linux_ptrace(struct thread *td, struct linux_ptrace_args *uap)
 		error = copyin((void *)uap->data, &r.fpreg, sizeof(r.fpreg));
 		if (error == 0) {
 			map_fpregs_from_linux(&u.bsd_fpreg, &r.fpreg);
-			error = kern_ptrace(td, PT_SETFPREGS, pid,
+			error = kern_ptrace(td, false, PT_SETFPREGS, pid,
 			    &u.bsd_fpreg, 0);
 		}
 		break;
@@ -409,7 +410,8 @@ linux_ptrace(struct thread *td, struct linux_ptrace_args *uap)
 		 * as necessary.
 		 */
 		if (uap->addr < sizeof(struct linux_pt_reg)) {
-			error = kern_ptrace(td, PT_GETREGS, pid, &u.bsd_reg, 0);
+			error = kern_ptrace(td, false, PT_GETREGS, pid,
+			    &u.bsd_reg, 0);
 			if (error != 0)
 				break;
 
@@ -424,7 +426,8 @@ linux_ptrace(struct thread *td, struct linux_ptrace_args *uap)
 			    (l_int)uap->data;
 
 			map_regs_from_linux(&u.bsd_reg, &r.reg);
-			error = kern_ptrace(td, PT_SETREGS, pid, &u.bsd_reg, 0);
+			error = kern_ptrace(td, false; PT_SETREGS, pid,
+			    &u.bsd_reg, 0);
 		}
 
 		/*
@@ -432,8 +435,8 @@ linux_ptrace(struct thread *td, struct linux_ptrace_args *uap)
 		 */
 		if (uap->addr >= LINUX_DBREG_OFFSET &&
 		    uap->addr <= LINUX_DBREG_OFFSET + LINUX_DBREG_SIZE) {
-			error = kern_ptrace(td, PT_GETDBREGS, pid, &u.bsd_dbreg,
-			    0);
+			error = kern_ptrace(td, false, PT_GETDBREGS, pid,
+			    &u.bsd_dbreg, 0);
 			if (error != 0)
 				break;
 
@@ -447,7 +450,7 @@ linux_ptrace(struct thread *td, struct linux_ptrace_args *uap)
 
 			*(l_int *)((char *)&u.bsd_dbreg + uap->addr) =
 			     uap->data;
-			error = kern_ptrace(td, PT_SETDBREGS, pid,
+			error = kern_ptrace(td, false, PT_SETDBREGS, pid,
 			    &u.bsd_dbreg, 0);
 		}
 

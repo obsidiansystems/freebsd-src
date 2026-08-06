@@ -1047,6 +1047,7 @@ freebsd32_ptrace(struct thread *td, struct freebsd32_ptrace_args *uap)
 	u_int pscr_args32[nitems(td->td_sa.args)];
 	void *addr;
 	int data, error, i;
+	bool pd_mode;
 
 	if (!allow_ptrace)
 		return (ENOSYS);
@@ -1057,6 +1058,9 @@ freebsd32_ptrace(struct thread *td, struct freebsd32_ptrace_args *uap)
 	AUDIT_ARG_VALUE(uap->data);
 	addr = &r;
 	data = uap->data;
+	pd_mode = (uap->req & PT_PROCDESC) != 0;
+	uap->req &= ~PT_PROCDESC;
+
 	switch (uap->req) {
 	case PT_GET_EVENT_MASK:
 	case PT_GET_SC_ARGS:
@@ -1192,7 +1196,7 @@ freebsd32_ptrace(struct thread *td, struct freebsd32_ptrace_args *uap)
 	if (error)
 		return (error);
 
-	error = kern_ptrace(td, uap->req, uap->pid, addr, data);
+	error = kern_ptrace(td, pd_mode, uap->req, uap->pid, addr, data);
 	if (error)
 		return (error);
 
