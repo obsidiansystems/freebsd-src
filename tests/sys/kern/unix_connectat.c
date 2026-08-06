@@ -78,20 +78,37 @@ static const struct sockaddr_un empty_sun = {
 	.sun_len = offsetof(struct sockaddr_un, sun_path),
 };
 
-/* Make a bound, listening stream socket. */
+/* Make a unix-domain socket of 'type'. */
 static int
-mklistener(const char *path)
+unix_make(int type)
+{
+	int s;
+
+	ATF_REQUIRE_MSG((s = socket(PF_UNIX, type, 0)) >= 0, "socket: %s",
+	    strerror(errno));
+	return (s);
+}
+
+/* Bind 's' to 'path', creating the socket file. */
+static void
+unix_bind(int s, const char *path)
 {
 	struct sockaddr_un sun = { .sun_family = AF_UNIX };
-	int l;
 
 	strlcpy(sun.sun_path, path, sizeof(sun.sun_path));
 	sun.sun_len = SUN_LEN(&sun);
-	ATF_REQUIRE((l = socket(PF_UNIX, SOCK_STREAM, 0)) >= 0);
-	ATF_REQUIRE_MSG(bind(l, (struct sockaddr *)&sun, sun.sun_len) == 0,
+	ATF_REQUIRE_MSG(bind(s, (struct sockaddr *)&sun, sun.sun_len) == 0,
 	    "bind(%s): %s", path, strerror(errno));
-	ATF_REQUIRE_MSG(listen(l, 1) == 0, "listen: %s", strerror(errno));
-	return (l);
+}
+
+/*
+ * Start listening on 's'.  Binding first is optional: an unbound listener is
+ * still reachable by descriptor, and leaves no socket file behind.
+ */
+static void
+unix_listen(int s)
+{
+	ATF_REQUIRE_MSG(listen(s, 1) == 0, "listen: %s", strerror(errno));
 }
 
 static int
@@ -189,8 +206,9 @@ ATF_TC_BODY(stream, tc)
 	char buf[8];
 	int l, s, a;
 
-	l = mklistener("stream.sock");
-	ATF_REQUIRE((s = socket(PF_UNIX, SOCK_STREAM, 0)) >= 0);
+	l = unix_make(SOCK_STREAM);
+	unix_listen(l);
+	s = unix_make(SOCK_STREAM);
 	ATF_REQUIRE_EQ(0, fdconnect(l, s));
 	ATF_REQUIRE((a = accept(l, NULL, NULL)) >= 0);
 
@@ -214,8 +232,10 @@ ATF_TC_BODY(stream_bound, tc)
 	socklen_t len;
 	int l, s;
 
-	l = mklistener("bound.sock");
-	ATF_REQUIRE((s = socket(PF_UNIX, SOCK_STREAM, 0)) >= 0);
+	l = unix_make(SOCK_STREAM);
+	unix_bind(l, "bound.sock");
+	unix_listen(l);
+	s = unix_make(SOCK_STREAM);
 	ATF_REQUIRE_EQ(0, fdconnect(l, s));
 
 	memset(&sun, 0, sizeof(sun));
@@ -228,64 +248,31 @@ ATF_TC_BODY(stream_bound, tc)
 }
 
 /*
- * A socket may listen while unbound, and connectat(2) reaches it by
- * descriptor: with no pathname there is nothing else that could name it.
- * mklistener() cannot be used, as it binds first.
- */
-ATF_TC_WITHOUT_HEAD(listen_unbound);
-ATF_TC_BODY(listen_unbound, tc)
-{
-	char buf[8];
-	int l, s, a;
-
-	ATF_REQUIRE((l = socket(PF_UNIX, SOCK_STREAM, 0)) >= 0);
-	ATF_REQUIRE_MSG(listen(l, 1) == 0, "listen: %s", strerror(errno));
-
-	ATF_REQUIRE((s = socket(PF_UNIX, SOCK_STREAM, 0)) >= 0);
-	ATF_REQUIRE_EQ(0, fdconnect(l, s));
-	ATF_REQUIRE((a = accept(l, NULL, NULL)) >= 0);
-
-	/* A real connection, not just an accepted descriptor. */
-	ATF_REQUIRE_EQ(5, write(s, "hello", 5));
-	ATF_REQUIRE_EQ(5, read(a, buf, sizeof(buf)));
-	ATF_REQUIRE_EQ(0, memcmp(buf, "hello", 5));
-
-	ATF_REQUIRE_EQ(0, close(a));
-	ATF_REQUIRE_EQ(0, close(s));
-	ATF_REQUIRE_EQ(0, close(l));
-}
-
-/*
- * A socket may be bound after it listens, so a listener can be published only
- * once it is ready to accept, rather than leaving a window in which the socket
- * file exists but connections to it are refused.  The late-bound name behaves
- * like any other.  mklistener() cannot be used: it binds first.
+ * The same primitives in the other order: a socket may be bound after it
+ * listens, so a listener can be published only once it is ready to accept,
+ * rather than leaving a window in which the socket file exists but connections
+ * to it are refused.  The late-bound name behaves like any other.
  */
 ATF_TC_WITHOUT_HEAD(bind_after_listen);
 ATF_TC_BODY(bind_after_listen, tc)
 {
-	struct sockaddr_un sun = { .sun_family = AF_UNIX };
-	struct sockaddr_un peer;
+	struct sockaddr_un sun;
 	socklen_t len;
 	int l, s, a;
 
-	ATF_REQUIRE((l = socket(PF_UNIX, SOCK_STREAM, 0)) >= 0);
-	ATF_REQUIRE_MSG(listen(l, 1) == 0, "listen: %s", strerror(errno));
+	l = unix_make(SOCK_STREAM);
+	unix_listen(l);
+	unix_bind(l, "late.sock");
 
-	strlcpy(sun.sun_path, "late.sock", sizeof(sun.sun_path));
-	sun.sun_len = SUN_LEN(&sun);
-	ATF_REQUIRE_MSG(bind(l, (struct sockaddr *)&sun, sun.sun_len) == 0,
-	    "bind after listen: %s", strerror(errno));
-
-	ATF_REQUIRE((s = socket(PF_UNIX, SOCK_STREAM, 0)) >= 0);
+	s = unix_make(SOCK_STREAM);
 	ATF_REQUIRE_EQ(0, pathconnect(AT_FDCWD, s, "late.sock"));
 	ATF_REQUIRE((a = accept(l, NULL, NULL)) >= 0);
 
 	/* The name bound after listen(2) is reported to the peer. */
-	memset(&peer, 0, sizeof(peer));
-	len = sizeof(peer);
-	ATF_REQUIRE_EQ(0, getpeername(s, (struct sockaddr *)&peer, &len));
-	ATF_REQUIRE_EQ(0, strcmp(peer.sun_path, "late.sock"));
+	memset(&sun, 0, sizeof(sun));
+	len = sizeof(sun);
+	ATF_REQUIRE_EQ(0, getpeername(s, (struct sockaddr *)&sun, &len));
+	ATF_REQUIRE_EQ(0, strcmp(sun.sun_path, "late.sock"));
 
 	ATF_REQUIRE_EQ(0, close(a));
 	ATF_REQUIRE_EQ(0, close(s));
@@ -310,17 +297,17 @@ ATF_TC_BODY(listen_after_disconnect, tc)
 	int l, c, s, a;
 
 	/* Connect a pair, then drop the accepted end to disconnect 'c'. */
-	ATF_REQUIRE((l = socket(PF_UNIX, SOCK_STREAM, 0)) >= 0);
-	ATF_REQUIRE_MSG(listen(l, 1) == 0, "listen: %s", strerror(errno));
-	ATF_REQUIRE((c = socket(PF_UNIX, SOCK_STREAM, 0)) >= 0);
+	l = unix_make(SOCK_STREAM);
+	unix_listen(l);
+	c = unix_make(SOCK_STREAM);
 	ATF_REQUIRE_EQ(0, fdconnect(l, c));
 	ATF_REQUIRE((a = accept(l, NULL, NULL)) >= 0);
 	ATF_REQUIRE_EQ(0, close(a));
 	ATF_REQUIRE_EQ(0, close(l));
 
 	/* The survivor listens, and takes a connection of its own. */
-	ATF_REQUIRE_MSG(listen(c, 1) == 0, "listen: %s", strerror(errno));
-	ATF_REQUIRE((s = socket(PF_UNIX, SOCK_STREAM, 0)) >= 0);
+	unix_listen(c);
+	s = unix_make(SOCK_STREAM);
 	ATF_REQUIRE_EQ(0, fdconnect(c, s));
 	ATF_REQUIRE((a = accept(c, NULL, NULL)) >= 0);
 
@@ -336,8 +323,8 @@ ATF_TC_BODY(dgram, tc)
 	char buf[8];
 	int p, s;
 
-	ATF_REQUIRE((p = socket(PF_UNIX, SOCK_DGRAM, 0)) >= 0);
-	ATF_REQUIRE((s = socket(PF_UNIX, SOCK_DGRAM, 0)) >= 0);
+	p = unix_make(SOCK_DGRAM);
+	s = unix_make(SOCK_DGRAM);
 	ATF_REQUIRE_EQ(0, fdconnect(p, s));
 	ATF_REQUIRE_EQ(5, send(s, "hello", 5, 0));
 	ATF_REQUIRE_EQ(5, recv(p, buf, sizeof(buf), 0));
@@ -428,10 +415,12 @@ ATF_TC_BODY(empty_path_vnode, tc)
 {
 	int l, s, a, pathfd;
 
-	l = mklistener("evnode.sock");
+	l = unix_make(SOCK_STREAM);
+	unix_bind(l, "evnode.sock");
+	unix_listen(l);
 	ATF_REQUIRE_MSG((pathfd = open("evnode.sock", O_PATH)) >= 0,
 	    "open(O_PATH): %s", strerror(errno));
-	ATF_REQUIRE((s = socket(PF_UNIX, SOCK_STREAM, 0)) >= 0);
+	s = unix_make(SOCK_STREAM);
 	ATF_REQUIRE_EQ(0, fdconnect(pathfd, s));
 	ATF_REQUIRE((a = accept(l, NULL, NULL)) >= 0);
 
@@ -450,8 +439,10 @@ ATF_TC_BODY(path, tc)
 {
 	int l, s, a;
 
-	l = mklistener("path.sock");
-	ATF_REQUIRE((s = socket(PF_UNIX, SOCK_STREAM, 0)) >= 0);
+	l = unix_make(SOCK_STREAM);
+	unix_bind(l, "path.sock");
+	unix_listen(l);
+	s = unix_make(SOCK_STREAM);
 	ATF_REQUIRE_EQ(0, pathconnect(AT_FDCWD, s, "path.sock"));
 	ATF_REQUIRE((a = accept(l, NULL, NULL)) >= 0);
 
@@ -472,10 +463,11 @@ ATF_TC_BODY(devfd, tc)
 	int l, s, a;
 
 	mount_fdescfs(NULL);
-	l = mklistener("devfd.sock");
+	l = unix_make(SOCK_STREAM);
+	unix_listen(l);
 	fdpath(path, sizeof(path), l);
 
-	ATF_REQUIRE((s = socket(PF_UNIX, SOCK_STREAM, 0)) >= 0);
+	s = unix_make(SOCK_STREAM);
 	ATF_REQUIRE_EQ(0, pathconnect(AT_FDCWD, s, path));
 	ATF_REQUIRE((a = accept(l, NULL, NULL)) >= 0);
 
@@ -499,13 +491,14 @@ ATF_TC_BODY(devfd_relative, tc)
 	int l, s, a, dirfd;
 
 	mount_fdescfs(NULL);
-	l = mklistener("devfd_rel.sock");
+	l = unix_make(SOCK_STREAM);
+	unix_listen(l);
 	ATF_REQUIRE_MSG((dirfd = open(FDDIR, O_DIRECTORY)) >= 0,
 	    "open(%s, O_DIRECTORY): %s", FDDIR, strerror(errno));
 
 	/* Name the listener by its fd number, relative to the fdescfs dir. */
 	ATF_REQUIRE(snprintf(path, sizeof(path), "%d", l) > 0);
-	ATF_REQUIRE((s = socket(PF_UNIX, SOCK_STREAM, 0)) >= 0);
+	s = unix_make(SOCK_STREAM);
 	ATF_REQUIRE_EQ(0, pathconnect(dirfd, s, path));
 	ATF_REQUIRE((a = accept(l, NULL, NULL)) >= 0);
 
@@ -528,11 +521,12 @@ ATF_TC_BODY(empty_path_devfd, tc)
 	int l, s, a, pathfd;
 
 	mount_fdescfs(NULL);
-	l = mklistener("edevfd.sock");
+	l = unix_make(SOCK_STREAM);
+	unix_listen(l);
 	fdpath(path, sizeof(path), l);
 	ATF_REQUIRE_MSG((pathfd = open(path, O_PATH)) >= 0,
 	    "open(%s, O_PATH): %s", path, strerror(errno));
-	ATF_REQUIRE((s = socket(PF_UNIX, SOCK_STREAM, 0)) >= 0);
+	s = unix_make(SOCK_STREAM);
 	ATF_REQUIRE_EQ(0, fdconnect(pathfd, s));
 	ATF_REQUIRE((a = accept(l, NULL, NULL)) >= 0);
 
@@ -558,9 +552,11 @@ ATF_TC_BODY(devfd_indirect, tc)
 	int l, s, pathfd, devfdfd;
 
 	mount_fdescfs(NULL);
-	l = mklistener("devfd_ind.sock");
+	l = unix_make(SOCK_STREAM);
+	unix_bind(l, "devfd_ind.sock");
+	unix_listen(l);
 	fdpath(node, sizeof(node), l);
-	ATF_REQUIRE((s = socket(PF_UNIX, SOCK_STREAM, 0)) >= 0);
+	s = unix_make(SOCK_STREAM);
 
 	/* A node naming an O_PATH handle of the socket's file. */
 	ATF_REQUIRE_MSG((pathfd = open("devfd_ind.sock", O_PATH)) >= 0,
@@ -596,12 +592,14 @@ ATF_TC_BODY(devfd_indirect_nodup, tc)
 	int l, s, a, pathfd;
 
 	mount_fdescfs(opts);
-	l = mklistener("devfd_nodup.sock");
+	l = unix_make(SOCK_STREAM);
+	unix_bind(l, "devfd_nodup.sock");
+	unix_listen(l);
 
 	ATF_REQUIRE_MSG((pathfd = open("devfd_nodup.sock", O_PATH)) >= 0,
 	    "open(O_PATH): %s", strerror(errno));
 	fdpath(path, sizeof(path), pathfd);
-	ATF_REQUIRE((s = socket(PF_UNIX, SOCK_STREAM, 0)) >= 0);
+	s = unix_make(SOCK_STREAM);
 	ATF_REQUIRE_EQ(0, pathconnect(AT_FDCWD, s, path));
 	ATF_REQUIRE((a = accept(l, NULL, NULL)) >= 0);
 
@@ -640,9 +638,10 @@ devfd_mode(const char * const *opts, int error)
 	int l, s, a, ret;
 
 	mount_fdescfs(opts);
-	l = mklistener("mode.sock");
+	l = unix_make(SOCK_STREAM);
+	unix_listen(l);
 	fdpath(path, sizeof(path), l);
-	ATF_REQUIRE((s = socket(PF_UNIX, SOCK_STREAM, 0)) >= 0);
+	s = unix_make(SOCK_STREAM);
 
 	ret = pathconnect(AT_FDCWD, s, path);
 	if (error == 0) {
@@ -721,7 +720,7 @@ ATF_TC_BODY(empty_path_at_fdcwd, tc)
 {
 	int s;
 
-	ATF_REQUIRE((s = socket(PF_UNIX, SOCK_STREAM, 0)) >= 0);
+	s = unix_make(SOCK_STREAM);
 	ATF_REQUIRE_ERRNO(EINVAL, connect(s,
 	    (const struct sockaddr *)&empty_sun, empty_sun.sun_len) == -1);
 	ATF_REQUIRE_ERRNO(EINVAL, fdconnect(AT_FDCWD, s) == -1);
@@ -734,8 +733,8 @@ ATF_TC_BODY(bad_peers, tc)
 {
 	int s, d, fd;
 
-	ATF_REQUIRE((s = socket(PF_UNIX, SOCK_STREAM, 0)) >= 0);
-	ATF_REQUIRE((d = socket(PF_UNIX, SOCK_DGRAM, 0)) >= 0);
+	s = unix_make(SOCK_STREAM);
+	d = unix_make(SOCK_DGRAM);
 
 	/* Non-socket descriptor. */
 	ATF_REQUIRE((fd = open(".", O_RDONLY)) >= 0);
@@ -748,13 +747,14 @@ ATF_TC_BODY(bad_peers, tc)
 	ATF_REQUIRE_EQ(0, close(fd));
 
 	/* Type mismatch between the two unix sockets. */
-	fd = mklistener("mismatch.sock");
+	fd = unix_make(SOCK_STREAM);
+	unix_listen(fd);
 	ATF_REQUIRE_ERRNO(EPROTOTYPE, fdconnect(fd, d) == -1);
 
 	ATF_REQUIRE_EQ(0, close(fd));
 
 	/* Stream peer that is not listening: 's' never called listen(2). */
-	ATF_REQUIRE((fd = socket(PF_UNIX, SOCK_STREAM, 0)) >= 0);
+	fd = unix_make(SOCK_STREAM);
 	ATF_REQUIRE_ERRNO(ECONNREFUSED, fdconnect(s, fd) == -1);
 
 	ATF_REQUIRE_EQ(0, close(fd));
@@ -773,7 +773,8 @@ ATF_TC_BODY(cap_connectat, tc)
 	char buf[8];
 	int l, s, token, a;
 
-	l = mklistener("cap.sock");
+	l = unix_make(SOCK_STREAM);
+	unix_listen(l);
 	ATF_REQUIRE((token = dup(l)) >= 0);
 	ATF_REQUIRE_EQ(0, cap_rights_limit(token,
 	    cap_rights_init(&rights, CAP_CONNECTAT)));
@@ -782,7 +783,7 @@ ATF_TC_BODY(cap_connectat, tc)
 	ATF_REQUIRE_ERRNO(ENOTCAPABLE, accept(token, NULL, NULL) == -1);
 	ATF_REQUIRE_ERRNO(ENOTCAPABLE, read(token, buf, sizeof(buf)) == -1);
 
-	ATF_REQUIRE((s = socket(PF_UNIX, SOCK_STREAM, 0)) >= 0);
+	s = unix_make(SOCK_STREAM);
 	ATF_REQUIRE_EQ(0, fdconnect(token, s));
 	ATF_REQUIRE((a = accept(l, NULL, NULL)) >= 0);
 
@@ -799,12 +800,13 @@ ATF_TC_BODY(cap_connectat_denied, tc)
 	cap_rights_t rights;
 	int l, s, token;
 
-	l = mklistener("capdeny.sock");
+	l = unix_make(SOCK_STREAM);
+	unix_listen(l);
 	ATF_REQUIRE((token = dup(l)) >= 0);
 	ATF_REQUIRE_EQ(0, cap_rights_limit(token,
 	    cap_rights_init(&rights, CAP_READ, CAP_WRITE)));
 
-	ATF_REQUIRE((s = socket(PF_UNIX, SOCK_STREAM, 0)) >= 0);
+	s = unix_make(SOCK_STREAM);
 	ATF_REQUIRE_ERRNO(ENOTCAPABLE, fdconnect(token, s) == -1);
 
 	ATF_REQUIRE_EQ(0, close(s));
@@ -816,7 +818,6 @@ ATF_TP_ADD_TCS(tp)
 {
 	ATF_TP_ADD_TC(tp, stream);
 	ATF_TP_ADD_TC(tp, stream_bound);
-	ATF_TP_ADD_TC(tp, listen_unbound);
 	ATF_TP_ADD_TC(tp, bind_after_listen);
 	ATF_TP_ADD_TC(tp, listen_after_disconnect);
 	ATF_TP_ADD_TC(tp, dgram);
