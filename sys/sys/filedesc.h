@@ -262,10 +262,13 @@ int	finstall(struct thread *td, struct file *fp, int *resultfd, int flags,
 	    struct filecaps *fcaps);
 int	finstall_refed(struct thread *td, struct file *fp, int *resultfd, int flags,
 	    struct filecaps *fcaps);
+int	finstall_at(struct thread *td, struct proc *p, struct file *fp,
+	    int atfd, int flags, struct filecaps *fcaps);
 int	fdalloc(struct thread *td, int minfd, int *result);
 int	fdallocn(struct thread *td, int minfd, int *fds, int n);
 int	fdcheckstd(struct thread *td);
 void	fdclose(struct thread *td, struct file *fp, int idx);
+bool	fdesc_is_unsafe(struct file *fp);
 void	fdcloseexec(struct thread *td);
 void	fdsetugidsafety(struct thread *td);
 struct	filedesc *fdcopy(struct filedesc *fdp, struct proc *p1);
@@ -285,6 +288,8 @@ int	getvnode(struct thread *td, int fd, const cap_rights_t *rightsp,
 	    struct file **fpp);
 int	getvnode_path(struct thread *td, int fd, const cap_rights_t *rightsp,
 	    uint8_t *flagsp, struct file **fpp);
+int	chdir_getvp(struct thread *td, int dirfd, struct vnode **vpp);
+int	chroot_getvp(struct thread *td, int dirfd, struct vnode **vpp);
 void	mountcheckdirs(struct vnode *olddp, struct vnode *newdp);
 
 int	fget_cap_noref(struct filedesc *fdp, int fd,

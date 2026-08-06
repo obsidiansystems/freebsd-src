@@ -1,7 +1,9 @@
 /*
  * Public system call stubs provided by libsys.
  *
+ *
  * Do not use directly, include <libsys.h> instead.
+ *
  *
  * DO NOT EDIT-- this file is automatically @generated.
  */
@@ -477,6 +479,18 @@ typedef int (__sys_pdwait_t)(int, int *, int, struct __wrusage *, struct __sigin
 typedef int (__sys_renameat2_t)(int, const char *, int, const char *, int);
 typedef int (__sys_pdopenpid_t)(pid_t, int);
 typedef int (__sys_pddupfd_t)(int, int, int);
+typedef int (__sys_pdsetfd_t)(int, int, int, const cap_rights_t *);
+typedef int (__sys_pdexec_t)(int, int, const char *, char **, char **, int);
+typedef int (__sys_pdsetfdrange_t)(int, u_int, u_int, int);
+typedef int (__sys_pdsetsigmask_t)(int, const sigset_t *);
+typedef int (__sys_pdsetsigign_t)(int, const sigset_t *);
+typedef int (__sys_pdchdir_t)(int, int);
+typedef int (__sys_pdsetpgid_t)(int, pid_t);
+typedef int (__sys_pdsetschedparam_t)(int, const struct sched_param *);
+typedef int (__sys_pdsetscheduler_t)(int, int, const struct sched_param *);
+typedef int (__sys_pdresetids_t)(int);
+typedef int (__sys_pdchroot_t)(int, int);
+typedef int (__sys_pdcap_enter_t)(int);
 
 _Noreturn void __sys__exit(int rval);
 int __sys_fork(void);
@@ -889,6 +903,18 @@ int __sys_pdwait(int fd, int * status, int options, struct __wrusage * wrusage, 
 int __sys_renameat2(int oldfd, const char * old, int newfd, const char * new, int flags);
 int __sys_pdopenpid(pid_t pid, int flags);
 int __sys_pddupfd(int pd, int fd, int flags);
+int __sys_pdsetfd(int procfd, int remotefd, int localfd, const cap_rights_t * rights);
+int __sys_pdexec(int procfd, int fd, const char * path, char ** argv, char ** envv, int flags);
+int __sys_pdsetfdrange(int procfd, u_int lowfd, u_int highfd, int flags);
+int __sys_pdsetsigmask(int procfd, const sigset_t * mask);
+int __sys_pdsetsigign(int procfd, const sigset_t * ign);
+int __sys_pdchdir(int procfd, int dirfd);
+int __sys_pdsetpgid(int procfd, pid_t pgid);
+int __sys_pdsetschedparam(int procfd, const struct sched_param * param);
+int __sys_pdsetscheduler(int procfd, int policy, const struct sched_param * param);
+int __sys_pdresetids(int procfd);
+int __sys_pdchroot(int procfd, int dirfd);
+int __sys_pdcap_enter(int procfd);
 __END_DECLS
 
 #endif /* __LIBSYS_H_ */

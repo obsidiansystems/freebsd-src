@@ -1,6 +1,7 @@
 /*
  * FreeBSD system call symbols.
  *
+ *
  * DO NOT EDIT-- this file is automatically @generated.
  */
 
@@ -829,4 +830,28 @@ FBSDprivate_1.0 {
 	__sys_pdopenpid;
 	_pddupfd;
 	__sys_pddupfd;
+	_pdsetfd;
+	__sys_pdsetfd;
+	_pdexec;
+	__sys_pdexec;
+	_pdsetfdrange;
+	__sys_pdsetfdrange;
+	_pdsetsigmask;
+	__sys_pdsetsigmask;
+	_pdsetsigign;
+	__sys_pdsetsigign;
+	_pdchdir;
+	__sys_pdchdir;
+	_pdsetpgid;
+	__sys_pdsetpgid;
+	_pdsetschedparam;
+	__sys_pdsetschedparam;
+	_pdsetscheduler;
+	__sys_pdsetscheduler;
+	_pdresetids;
+	__sys_pdresetids;
+	_pdchroot;
+	__sys_pdchroot;
+	_pdcap_enter;
+	__sys_pdcap_enter;
 };

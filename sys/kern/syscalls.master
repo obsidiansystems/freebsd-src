@@ -3443,4 +3443,83 @@
 		);
 	}
 
+605	AUE_NULL	STD|CAPENABLED {
+		int pdsetfd(
+		    int procfd,
+		    int remotefd,
+		    int localfd,
+		    _In_opt_ const cap_rights_t *rights
+		);
+	}
+606	AUE_NULL	STD|CAPENABLED {
+		int pdexec(
+		    int procfd,
+		    int fd,
+		    _In_z_ const char *path,
+		    _In_z_ char **argv,
+		    _In_z_ char **envv,
+		    int flags
+		);
+	}
+607	AUE_NULL	STD|CAPENABLED {
+		int pdsetfdrange(
+		    int procfd,
+		    u_int lowfd,
+		    u_int highfd,
+		    int flags
+		);
+	}
+608	AUE_NULL	STD|CAPENABLED {
+		int pdsetsigmask(
+		    int procfd,
+		    _In_ const sigset_t *mask
+		);
+	}
+609	AUE_NULL	STD|CAPENABLED {
+		int pdsetsigign(
+		    int procfd,
+		    _In_ const sigset_t *ign
+		);
+	}
+610	AUE_NULL	STD|CAPENABLED {
+		int pdchdir(
+		    int procfd,
+		    int dirfd
+		);
+	}
+611	AUE_NULL	STD|CAPENABLED {
+		int pdsetpgid(
+		    int procfd,
+		    pid_t pgid
+		);
+	}
+612	AUE_NULL	STD|CAPENABLED {
+		int pdsetschedparam(
+		    int procfd,
+		    _In_ const struct sched_param *param
+		);
+	}
+613	AUE_NULL	STD|CAPENABLED {
+		int pdsetscheduler(
+		    int procfd,
+		    int policy,
+		    _In_ const struct sched_param *param
+		);
+	}
+614	AUE_NULL	STD|CAPENABLED {
+		int pdresetids(
+		    int procfd
+		);
+	}
+615	AUE_NULL	STD|CAPENABLED {
+		int pdchroot(
+		    int procfd,
+		    int dirfd
+		);
+	}
+616	AUE_NULL	STD|CAPENABLED {
+		int pdcap_enter(
+		    int procfd
+		);
+	}
 ; vim: syntax=off

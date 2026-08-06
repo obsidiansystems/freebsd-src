@@ -1,7 +1,9 @@
 /*
  * System call argument to DTrace register array conversion.
  *
+ *
  * This file is part of the DTrace syscall provider.
+ *
  *
  * DO NOT EDIT-- this file is automatically @generated.
  */
@@ -3570,6 +3572,109 @@ systrace_args(int sysnum, void *params, uint64_t *uarg, int *n_args)
 		iarg[a++] = p->fd; /* int */
 		iarg[a++] = p->flags; /* int */
 		*n_args = 3;
+		break;
+	}
+	/* pdsetfd */
+	case 605: {
+		struct pdsetfd_args *p = params;
+		iarg[a++] = p->procfd; /* int */
+		iarg[a++] = p->remotefd; /* int */
+		iarg[a++] = p->localfd; /* int */
+		uarg[a++] = (intptr_t)p->rights; /* const cap_rights_t * */
+		*n_args = 4;
+		break;
+	}
+	/* pdexec */
+	case 606: {
+		struct pdexec_args *p = params;
+		iarg[a++] = p->procfd; /* int */
+		iarg[a++] = p->fd; /* int */
+		uarg[a++] = (intptr_t)p->path; /* const char * */
+		uarg[a++] = (intptr_t)p->argv; /* char ** */
+		uarg[a++] = (intptr_t)p->envv; /* char ** */
+		iarg[a++] = p->flags; /* int */
+		*n_args = 6;
+		break;
+	}
+	/* pdsetfdrange */
+	case 607: {
+		struct pdsetfdrange_args *p = params;
+		iarg[a++] = p->procfd; /* int */
+		uarg[a++] = p->lowfd; /* u_int */
+		uarg[a++] = p->highfd; /* u_int */
+		iarg[a++] = p->flags; /* int */
+		*n_args = 4;
+		break;
+	}
+	/* pdsetsigmask */
+	case 608: {
+		struct pdsetsigmask_args *p = params;
+		iarg[a++] = p->procfd; /* int */
+		uarg[a++] = (intptr_t)p->mask; /* const sigset_t * */
+		*n_args = 2;
+		break;
+	}
+	/* pdsetsigign */
+	case 609: {
+		struct pdsetsigign_args *p = params;
+		iarg[a++] = p->procfd; /* int */
+		uarg[a++] = (intptr_t)p->ign; /* const sigset_t * */
+		*n_args = 2;
+		break;
+	}
+	/* pdchdir */
+	case 610: {
+		struct pdchdir_args *p = params;
+		iarg[a++] = p->procfd; /* int */
+		iarg[a++] = p->dirfd; /* int */
+		*n_args = 2;
+		break;
+	}
+	/* pdsetpgid */
+	case 611: {
+		struct pdsetpgid_args *p = params;
+		iarg[a++] = p->procfd; /* int */
+		iarg[a++] = p->pgid; /* pid_t */
+		*n_args = 2;
+		break;
+	}
+	/* pdsetschedparam */
+	case 612: {
+		struct pdsetschedparam_args *p = params;
+		iarg[a++] = p->procfd; /* int */
+		uarg[a++] = (intptr_t)p->param; /* const struct sched_param * */
+		*n_args = 2;
+		break;
+	}
+	/* pdsetscheduler */
+	case 613: {
+		struct pdsetscheduler_args *p = params;
+		iarg[a++] = p->procfd; /* int */
+		iarg[a++] = p->policy; /* int */
+		uarg[a++] = (intptr_t)p->param; /* const struct sched_param * */
+		*n_args = 3;
+		break;
+	}
+	/* pdresetids */
+	case 614: {
+		struct pdresetids_args *p = params;
+		iarg[a++] = p->procfd; /* int */
+		*n_args = 1;
+		break;
+	}
+	/* pdchroot */
+	case 615: {
+		struct pdchroot_args *p = params;
+		iarg[a++] = p->procfd; /* int */
+		iarg[a++] = p->dirfd; /* int */
+		*n_args = 2;
+		break;
+	}
+	/* pdcap_enter */
+	case 616: {
+		struct pdcap_enter_args *p = params;
+		iarg[a++] = p->procfd; /* int */
+		*n_args = 1;
 		break;
 	}
 	default:
@@ -9567,6 +9672,183 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 			break;
 		};
 		break;
+	/* pdsetfd */
+	case 605:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		case 1:
+			p = "int";
+			break;
+		case 2:
+			p = "int";
+			break;
+		case 3:
+			p = "userland const cap_rights_t *";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* pdexec */
+	case 606:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		case 1:
+			p = "int";
+			break;
+		case 2:
+			p = "userland const char *";
+			break;
+		case 3:
+			p = "userland char **";
+			break;
+		case 4:
+			p = "userland char **";
+			break;
+		case 5:
+			p = "int";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* pdsetfdrange */
+	case 607:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		case 1:
+			p = "u_int";
+			break;
+		case 2:
+			p = "u_int";
+			break;
+		case 3:
+			p = "int";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* pdsetsigmask */
+	case 608:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		case 1:
+			p = "userland const sigset_t *";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* pdsetsigign */
+	case 609:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		case 1:
+			p = "userland const sigset_t *";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* pdchdir */
+	case 610:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		case 1:
+			p = "int";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* pdsetpgid */
+	case 611:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		case 1:
+			p = "pid_t";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* pdsetschedparam */
+	case 612:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		case 1:
+			p = "userland const struct sched_param *";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* pdsetscheduler */
+	case 613:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		case 1:
+			p = "int";
+			break;
+		case 2:
+			p = "userland const struct sched_param *";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* pdresetids */
+	case 614:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* pdchroot */
+	case 615:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		case 1:
+			p = "int";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* pdcap_enter */
+	case 616:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		default:
+			break;
+		};
+		break;
 	default:
 		break;
 	};
@@ -11602,6 +11884,66 @@ systrace_return_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 		break;
 	/* pddupfd */
 	case 604:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* pdsetfd */
+	case 605:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* pdexec */
+	case 606:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* pdsetfdrange */
+	case 607:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* pdsetsigmask */
+	case 608:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* pdsetsigign */
+	case 609:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* pdchdir */
+	case 610:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* pdsetpgid */
+	case 611:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* pdsetschedparam */
+	case 612:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* pdsetscheduler */
+	case 613:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* pdresetids */
+	case 614:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* pdchroot */
+	case 615:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* pdcap_enter */
+	case 616:
 		if (ndx == 0 || ndx == 1)
 			p = "int";
 		break;

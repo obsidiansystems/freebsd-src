@@ -184,6 +184,7 @@
 #define	RFCFDG		(1<<12)	/* close all fds, zero fd table */
 #define	RFTHREAD	(1<<13)	/* enable kernel thread support */
 #define	RFSIGSHARE	(1<<14)	/* share signal handlers */
+#define	RFEMBRYO	(1<<15)	/* create an embryonic process (pdrfork) */
 #define	RFLINUXTHPN	(1<<16)	/* do linux clone exit parent notification */
 #define	RFSTOPPED	(1<<17)	/* leave child in a stopped state */
 #define	RFHIGHPID	(1<<18)	/* use a pid higher than 10 (idleproc) */
@@ -198,8 +199,8 @@
 /* user: vfork(2) semantics, clear signals */
 #define	RFSPAWN		(1U<<31)
 #define	RFFLAGS		(RFFDG | RFPROC | RFMEM | RFNOWAIT | RFCFDG | \
-    RFTHREAD | RFSIGSHARE | RFLINUXTHPN | RFSTOPPED | RFHIGHPID | RFTSIGZMB | \
-    RFPROCDESC | RFSPAWN | RFPPWAIT)
+    RFTHREAD | RFSIGSHARE | RFEMBRYO | RFLINUXTHPN | RFSTOPPED | RFHIGHPID | \
+    RFTSIGZMB | RFPROCDESC | RFSPAWN | RFPPWAIT)
 #define	RFKERNELONLY	(RFSTOPPED | RFHIGHPID | RFPROCDESC)
 
 /* kcmp() options. */

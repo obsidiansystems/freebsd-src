@@ -2347,6 +2347,70 @@ finstall(struct thread *td, struct file *fp, int *fd, int flags,
 }
 
 /*
+ * Install a file at a caller-chosen descriptor number in the given file
+ * descriptor table, growing the table if necessary and evicting any
+ * descriptor already at that slot.  A new reference to fp is taken; the
+ * caller retains its own reference.
+ *
+ * This is used to build up the descriptor table of a not-yet-running
+ * process, where the caller dictates exact descriptor numbers (as with
+ * posix_spawn file actions) rather than letting the kernel allocate the
+ * lowest free one.  The target table must not be concurrently accessed.
+ */
+int
+finstall_at(struct thread *td, struct proc *p, struct file *fp,
+    int atfd, int flags, struct filecaps *fcaps)
+{
+	struct filedesc *fdp = p->p_fd;
+	struct file *oldfp;
+	int maxfd;
+
+	if (atfd < 0)
+		return (EBADF);
+	/*
+	 * Bound atfd by the file-descriptor limit of p, the process whose
+	 * table receives the descriptor -- not td's process, since pdsetfd(2)
+	 * installs into an embryonic process's table on behalf of a caller
+	 * whose RLIMIT_NOFILE may differ.  td is still used below to close any
+	 * descriptor being replaced.
+	 *
+	 * lim_cur_proc() requires the process lock; no caller holds it here,
+	 * and it is dropped again before FILEDESC_XLOCK below.
+	 */
+	PROC_LOCK(p);
+	maxfd = min((int)lim_cur_proc(p, RLIMIT_NOFILE), maxfilesperproc);
+	PROC_UNLOCK(p);
+	if (atfd >= maxfd)
+		return (EMFILE);
+	if (!fhold(fp))
+		return (EBADF);
+
+	FILEDESC_XLOCK(fdp);
+	if (atfd >= fdp->fd_nfiles)
+		fdgrowtable(fdp, atfd + 1);
+
+	oldfp = fdp->fd_ofiles[atfd].fde_file;
+	if (oldfp != NULL) {
+#ifdef CAPABILITIES
+		seqc_write_begin(&fdp->fd_ofiles[atfd].fde_seqc);
+#endif
+		fdp->fd_ofiles[atfd].fde_file = NULL;
+#ifdef CAPABILITIES
+		seqc_write_end(&fdp->fd_ofiles[atfd].fde_seqc);
+#endif
+		fdefree_last(&fdp->fd_ofiles[atfd]);
+	} else {
+		fdused(fdp, atfd);
+	}
+	_finstall(fdp, fp, atfd, flags, fcaps);
+	FILEDESC_XUNLOCK(fdp);
+
+	if (oldfp != NULL)
+		(void)fdrop(oldfp, td);
+	return (0);
+}
+
+/*
  * Build a new filedesc structure from another.
  *
  * If fdp is not NULL, return with it shared locked.
@@ -2821,8 +2885,8 @@ pdescfree(struct thread *td)
  * Since fdsetugidsafety calls this only for fd 0, 1 and 2, this check is
  * sufficient.  We also don't check for setugidness since we know we are.
  */
-static bool
-is_unsafe(struct file *fp)
+bool
+fdesc_is_unsafe(struct file *fp)
 {
 	struct vnode *vp;
 
@@ -2849,7 +2913,7 @@ fdsetugidsafety(struct thread *td)
 	MPASS(fdp->fd_nfiles >= 3);
 	for (i = 0; i <= 2; i++) {
 		fp = fdp->fd_ofiles[i].fde_file;
-		if (fp != NULL && is_unsafe(fp)) {
+		if (fp != NULL && fdesc_is_unsafe(fp)) {
 			FILEDESC_XLOCK(fdp);
 			knote_fdclose(td, i);
 			/*

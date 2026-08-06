@@ -30,7 +30,7 @@
 .\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 .\" SUCH DAMAGE.
 .\"
-.Dd April 19, 2026
+.Dd July 23, 2026
 .Dt PDFORK 2
 .Os
 .Sh NAME
@@ -40,12 +40,26 @@
 .Nm pdgetpid ,
 .Nm pdkill ,
 .Nm pdwait ,
-.Nm pddupfd
+.Nm pddupfd ,
+.Nm pdexec ,
+.Nm pdsetfd ,
+.Nm pdsetfdrange ,
+.Nm pdsetsigmask ,
+.Nm pdsetsigign ,
+.Nm pdchdir ,
+.Nm pdchroot ,
+.Nm pdsetpgid ,
+.Nm pdsetschedparam ,
+.Nm pdsetscheduler ,
+.Nm pdresetids ,
+.Nm pdcap_enter
 .Nd System calls to manage process descriptors
 .Sh LIBRARY
 .Lb libc
 .Sh SYNOPSIS
 .In sys/procdesc.h
+.In sys/capsicum.h
+.In sched.h
 .Ft pid_t
 .Fn pdfork "int *fdp" "int pdflags"
 .Ft pid_t
@@ -66,6 +80,30 @@
 .Fc
 .Ft int
 .Fn pddupfd "int fd" "int remotefd" "int flags"
+.Ft int
+.Fn pdexec "int procfd" "int fd" "const char *path" "char **argv" "char **envv" "int flags"
+.Ft int
+.Fn pdsetfd "int fd" "int remotefd" "int localfd" "const cap_rights_t *rights"
+.Ft int
+.Fn pdsetfdrange "int fd" "u_int lowfd" "u_int highfd" "int flags"
+.Ft int
+.Fn pdsetsigmask "int fd" "const sigset_t *mask"
+.Ft int
+.Fn pdsetsigign "int fd" "const sigset_t *ign"
+.Ft int
+.Fn pdchdir "int fd" "int dirfd"
+.Ft int
+.Fn pdchroot "int fd" "int dirfd"
+.Ft int
+.Fn pdsetpgid "int fd" "pid_t pgid"
+.Ft int
+.Fn pdsetschedparam "int fd" "const struct sched_param *param"
+.Ft int
+.Fn pdsetscheduler "int fd" "int policy" "const struct sched_param *param"
+.Ft int
+.Fn pdresetids "int fd"
+.Ft int
+.Fn pdcap_enter "int fd"
 .Sh DESCRIPTION
 Process descriptors are special file descriptors that represent processes,
 and are created using
@@ -205,6 +243,315 @@ The
 argument is reserved and must be zero.
 Certain file descriptor types cannot be copied this way, namely
 kqueues.
+.Ss Creating a process without fork
+The
+.Fn pdrfork
+function with an
+.Fa rfflags
+of
+.Dv RFEMBRYO
+creates an
+.Em embryonic
+process: one that exists but has never run.
+It has no address space and no program, an empty file descriptor table
+and default signal handling.
+Because an embryo inherits nothing,
+.Dv RFEMBRYO
+describes the new process completely and may not be combined with the
+other
+.Xr rfork 2
+flags, which say what is to be inherited.
+On success, a process descriptor for it is stored in the integer pointed
+to by
+.Fa fdp ,
+the pid of the new process is returned, and the
+.Fa pdflags
+argument takes the same flags as
+.Fn pdfork .
+.Pp
+The
+.Fn pdexec
+function gives the embryonic process a program and runs it.
+The program is named either by
+.Fa path ,
+resolved by the kernel in the new process against the working directory and
+root it has been given, or, when
+.Dv AT_EMPTY_PATH
+is set in
+.Fa flags ,
+by the open file descriptor
+.Fa fd
+as with
+.Xr fexecve 2 .
+Only
+.Dv AT_FDCWD
+is accepted for
+.Fa fd
+in the path form; a real directory descriptor is not yet supported and fails
+with
+.Er EINVAL .
+The
+.Fa argv
+and
+.Fa envv
+arguments specify the argument and environment vectors.
+No flag other than
+.Dv AT_EMPTY_PATH
+is defined.
+.Pp
+The descriptor form leaves
+.Fa fd
+open in the new process rather than closing it on exec, as
+.Xr fexecve 2
+does, so it is visible to the program that runs;
+this is required for a
+.Sq #!
+script, whose interpreter reads the script back through
+.Pa /dev/fd/ Ns Ar fd .
+The path form installs nothing into the new process, so the program has no
+descriptor of its own executable, which is why
+.Xr posix_spawn 3
+uses it.
+.Pp
+Because a program needs a working directory and a root to resolve paths,
+.Fn pdexec
+fails with
+.Er EINVAL
+unless both have been set with
+.Fn pdchdir
+and
+.Fn pdchroot ,
+or the process has been placed in capability mode with
+.Fn pdcap_enter ,
+where paths are not used.
+.Pp
+Loading a program and running it is one operation, which is what
+.Xr execve 2
+does, aimed at another process rather than at the caller.
+.Pp
+The exec is performed by the target process itself, on its own thread and
+in its own address space, rather than by the caller.
+The process therefore has no address space at all until
+.Fn pdexec ,
+and a failure to load the program is fatal to it: there is nothing for a
+process that has never run to fall back to, so it is destroyed and its
+creator learns of this through the process descriptor.
+.Pp
+.Fn pdexec
+requires the
+.Dv CAP_PDKILL
+capability right on
+.Fa fd
+in addition to
+.Dv CAP_PDSETFD ,
+since starting a process is the same authority that killing one is
+gated by.
+.Pp
+The first time the process is scheduled, execution begins; after
+.Fn pdexec
+the process descriptor behaves identically to one created by
+.Fn pdfork .
+.Pp
+Unlike the traditional
+.Fn fork Ns / Ns Fn execve
+pattern, the new process is never a copy of the parent: rather than
+inheriting the parent's state and undoing what is unwanted, it starts
+as minimal as possible, and anything it needs must be configured
+explicitly.
+That means
+.Fn pdrfork
+with
+.Dv RFEMBRYO
+then
+.Fn pdexec
+alone will essentially never be enough for any real-world use case.
+The next section,
+.Sx Configuring an embryonic process ,
+describes how this configuration is done.
+.Pp
+The file descriptor table is empty, all signals have their default
+disposition and none are blocked, no memory is shared, and it has neither
+a working directory nor a root.
+What the new process does take from its creator is limited to the
+properties it must have in order to exist at all: its credentials,
+resource limits, process group, and scheduling parameters.
+.Pp
+A consequence worth noting is that state
+.Xr execve 2
+would have preserved is
+.Em not
+preserved here, because there is no prior program to preserve it from.
+Signals set to
+.Dv SIG_IGN
+by the creator, for instance, are reset to their default disposition
+rather than remaining ignored.
+Callers emulating
+.Xr fork 2 Ns / Ns Xr execve 2
+semantics, such as an implementation of
+.Xr posix_spawn 3 ,
+must therefore establish such state explicitly.
+.Ss Configuring an embryonic process
+The following functions establish, on an embryonic process, the state that
+.Xr fork 2 Ns / Ns Xr execve 2
+would have conferred implicitly.
+Each reimplements the inheriting that model would have done, so that a
+caller such as
+.Xr posix_spawn 3
+can reproduce it without a child of its own.
+All of them act on a process that has not started, require the
+.Dv CAP_PDSETFD
+capability right on
+.Fa fd ,
+and may be called in any order before
+.Fn pdexec .
+.Pp
+The
+.Fn pdsetfd
+function installs a single file descriptor into the new process,
+mirroring
+.Fn pddupfd .
+The descriptor
+.Fa localfd
+of the calling process is duplicated as descriptor
+.Fa remotefd
+in the process named by the
+.Fa fd
+process descriptor.
+It may be called multiple times to set up the new process's standard
+I/O and any other descriptors it needs.
+If
+.Fa remotefd
+is already set, it is replaced.
+The installed descriptor carries the capability rights retained on
+.Fa localfd .
+A non-
+.Dv NULL
+.Fa rights
+narrows them further: it must name a subset of those rights, and the
+descriptor is installed with only that subset, allowing a caller to hand the
+new process a descriptor weaker than the one it holds itself.
+.Pp
+When descriptor installation into the embryonic process is
+.Em restricted
+(see
+.Sx SECURITY CONSIDERATIONS ) ,
+.Fn pdsetfd
+refuses, with
+.Er EPERM ,
+to install as
+.Fa remotefd
+0, 1 or 2 a descriptor whose backing may change out from under the
+process after it starts, such as a
+.Xr procfs 5
+node.
+These descriptors carry implicit significance as the standard input,
+output and error streams, so the program may write to them without ever
+naming them; the same protection is applied to a set-user-ID or
+set-group-ID program's descriptors across
+.Xr execve 2 .
+Descriptors numbered 3 and above are not restricted.
+.Pp
+The
+.Fn pdsetfdrange
+function is the bulk form of
+.Fn pdsetfd :
+it installs the caller's descriptors from
+.Fa lowfd
+through
+.Fa highfd
+into the new process at the same descriptor numbers.
+Descriptors that are closed, or marked close-on-fork or close-on-exec,
+are skipped, so that what is copied is what would have survived a
+.Xr fork 2
+followed by an
+.Xr execve 2 .
+The
+.Fa flags
+argument is reserved and must be zero.
+.Pp
+The
+.Fn pdsetsigmask
+function sets the new process's signal mask to
+.Fa mask ,
+and
+.Fn pdsetsigign
+sets the signals in
+.Fa ign
+to be ignored.
+An embryonic process blocks no signals and gives every signal its
+default disposition, so a caller wanting the
+.Xr execve 2
+behaviour --- the mask preserved, and signals already ignored kept
+ignored --- asks for it with these two calls.
+.Dv SIGKILL
+and
+.Dv SIGSTOP
+cannot be blocked or ignored and are silently skipped.
+.Pp
+The
+.Fn pdchdir
+function sets the new process's current working directory to the
+directory named by the descriptor
+.Fa dirfd ,
+as
+.Xr fchdir 2
+would, using the caller's own lookup and permission check.
+.Pp
+The
+.Fn pdchroot
+function sets the new process's root directory.
+A
+.Fa dirfd
+of
+.Dv AT_FDROOT
+gives it the caller's own root, which propagates the caller's confinement
+rather than changing it and so requires no privilege; any other descriptor
+names a new root and is a
+.Xr chroot 2 ,
+requiring the
+.Dv PRIV_VFS_CHROOT
+privilege.
+.Pp
+The
+.Fn pdsetpgid
+function sets the new process's process group, as
+.Xr setpgid 2 .
+Unlike
+.Xr setpgid 2
+it does not refuse a process that has an image loaded, since an embryo
+has not run that image and so has made no arrangements a caller could
+disturb.
+.Pp
+The
+.Fn pdsetschedparam
+and
+.Fn pdsetscheduler
+functions set the scheduling parameters, and the scheduling policy and
+parameters, of the new process, as
+.Xr sched_setparam 2
+and
+.Xr sched_setscheduler 2 .
+.Pp
+The
+.Fn pdresetids
+function sets the new process's effective user and group ids to its real
+ones, which is what
+.Dv POSIX_SPAWN_RESETIDS
+requests.
+The image's access check at
+.Fn pdexec
+is then made against the identity the process will run as.
+.Pp
+The
+.Fn pdcap_enter
+function places the new process in
+.Xr capsicum 4
+capability mode, as
+.Xr cap_enter 2 ,
+before it runs.
+Such a process resolves paths only against descriptors, so any working
+directory or root it has not been given is set to the system root, since the
+value cannot matter to a process that will never consult it.
 .Sh INTERACTION OF PROCESS DESCRIPTORS AND Xr WAITPID 2
 .Pp
 The
@@ -312,8 +659,20 @@ does.
 .Fn pdgetpid ,
 .Fn pdkill ,
 .Fn pdwait ,
+.Fn pddupfd ,
+.Fn pdrfork ,
+.Fn pdsetfd ,
+.Fn pdsetfdrange ,
+.Fn pdsetsigmask ,
+.Fn pdsetsigign ,
+.Fn pdchdir ,
+.Fn pdchroot ,
+.Fn pdsetpgid ,
+.Fn pdsetschedparam ,
+.Fn pdsetscheduler ,
+.Fn pdcap_enter ,
 and
-.Fn pddupfd
+.Fn pdresetids
 return 0 on success and -1 on failure.
 .Sh ERRORS
 These functions may return the same error numbers as their PID-based equivalents
@@ -418,6 +777,118 @@ The specified process does not have a file descriptor table.
 refers to a file that cannot be duplicated across a process boundary,
 such as a kqueue.
 .El
+.Pp
+The
+.Fn pdrfork
+.Pp
+The
+.Fn pdsetfd
+function may fail with:
+.Bl -tag -width Er
+.It Bq Er EBADF
+.Fa fd
+or
+.Fa localfd
+is not a valid file descriptor.
+.It Bq Er EINVAL
+.Fa fd
+is not a process file descriptor.
+.It Bq Er EINVAL
+The process specified by the
+.Fa fd
+process descriptor has already been started.
+.It Bq Er EPERM
+Descriptor installation into the embryonic process is
+.Em restricted
+(see
+.Sx SECURITY CONSIDERATIONS ) ,
+.Fa remotefd
+is 0, 1 or 2, and
+.Fa localfd
+references a file whose backing may change after execution begins.
+.El
+.Sh SECURITY CONSIDERATIONS
+Like most types of file descriptors, process descriptors may be passed
+to another process.
+A process created with
+.Fn pdrfork
+runs with the credentials of the process that called
+.Fn pdrfork ,
+.Em not
+the credentials of whichever process eventually starts it.
+Therefore, handing off a process descriptor to an embryonic process
+should be considered to have security risks similar to marking a binary
+set-user-ID \(em in both cases a possibly less-privileged process has
+the ability to initialize a more-privileged process with resources,
+which can lead to
+.Em confused deputy
+privilege escalations if the executable in question was not specifically
+designed with this use case in mind.
+.Pp
+This situation motivates the notion of a
+.Em restricted
+embryonic process.
+Descriptor installation with
+.Fn pdsetfd
+is restricted when either of the following holds:
+.Bl -bullet
+.It
+The embryonic process is executing a set-user-ID or set-group-ID
+program.
+.It
+The calling process runs as a different user or group than the
+embryonic process, and the embryonic process will not run in capability
+mode (see
+.Xr capsicum 4 ) .
+.El
+.Pp
+Two aspects of this condition warrant explanation:
+.Bl -bullet
+.It
+The set-user-ID and set-group-ID condition is largely redundant: it adds
+coverage only when the embryonic process's set IDs coincide with the
+calling process's, or when the embryonic process is in capability mode
+(where the second condition does not apply).
+It could be argued that no restriction is warranted in those cases, but
+out of an abundance of caution, and out of respect for the intent of the
+set-user-ID and set-group-ID bits, the restriction is applied anyway.
+.It
+Capability mode is excluded from the second condition because a
+sandboxed embryonic process's ambient credentials are not meant to
+matter: all authority should stem from the open file descriptors alone.
+.El
+.Pp
+For a restricted process,
+.Fn pdsetfd
+declines to install a descriptor referring to a file deemed unsafe as
+descriptor 0, 1 or 2, protecting those descriptor numbers from certain
+confused-deputy problems.
+(The
+.Sx DESCRIPTION
+describes which files are deemed unsafe.)
+However, this still leaves higher-numbered descriptors unprotected, and
+low-numbered ones still only semi-protected, as confused-deputy
+problems involving a
+.Dq safe
+descriptor at 0, 1 or 2 are still possible.
+.Pp
+To mitigate these remaining issues,
+the operations on an unstarted process are gated by separate capability
+rights so that authority can be delegated at a fine granularity:
+.Fn pdsetfd
+requires
+.Dv CAP_PDSETFD ,
+while
+.Xr pdkill 2
+merely requires
+.Dv CAP_PDKILL .
+If the
+.Fn pdrfork
+caller uses
+.Xr cap_rights_limit 2
+to delegate a descriptor that permits starting or killing the process
+without permitting its descriptor table to be reconfigured, then the
+security concern is mitigated.
 .Sh SEE ALSO
 .Xr close 2 ,
 .Xr fork 2 ,
@@ -448,6 +919,12 @@ and
 .Fn pddupfd
 system calls first appeared in
 .Fx 16.0 .
+The
+.Fn pdrfork
+and
+.Fn pdsetfd
+system calls first appeared in
+.Fx 16.0 .
 .Pp
 Support for process descriptors mode was developed as part of the
 .Tn TrustedBSD
@@ -474,3 +951,9 @@ and
 .Fn pddupfd
 functions were developed by
 .An Konstantin Belousov Aq Mt kib@FreeBSD.org .
+The
+.Fn pdrfork
+and
+.Fn pdsetfd
+functions were developed by
+.An John Ericson Aq Mt subscribe@johnericson.me .

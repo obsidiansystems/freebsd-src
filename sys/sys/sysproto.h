@@ -1,6 +1,7 @@
 /*
  * System call prototypes.
  *
+ *
  * DO NOT EDIT-- this file is automatically @generated.
  */
 
@@ -1941,6 +1942,61 @@ struct pddupfd_args {
 	char fd_l_[PADL_(int)]; int fd; char fd_r_[PADR_(int)];
 	char flags_l_[PADL_(int)]; int flags; char flags_r_[PADR_(int)];
 };
+struct pdsetfd_args {
+	char procfd_l_[PADL_(int)]; int procfd; char procfd_r_[PADR_(int)];
+	char remotefd_l_[PADL_(int)]; int remotefd; char remotefd_r_[PADR_(int)];
+	char localfd_l_[PADL_(int)]; int localfd; char localfd_r_[PADR_(int)];
+	char rights_l_[PADL_(const cap_rights_t *)]; const cap_rights_t * rights; char rights_r_[PADR_(const cap_rights_t *)];
+};
+struct pdexec_args {
+	char procfd_l_[PADL_(int)]; int procfd; char procfd_r_[PADR_(int)];
+	char fd_l_[PADL_(int)]; int fd; char fd_r_[PADR_(int)];
+	char path_l_[PADL_(const char *)]; const char * path; char path_r_[PADR_(const char *)];
+	char argv_l_[PADL_(char **)]; char ** argv; char argv_r_[PADR_(char **)];
+	char envv_l_[PADL_(char **)]; char ** envv; char envv_r_[PADR_(char **)];
+	char flags_l_[PADL_(int)]; int flags; char flags_r_[PADR_(int)];
+};
+struct pdsetfdrange_args {
+	char procfd_l_[PADL_(int)]; int procfd; char procfd_r_[PADR_(int)];
+	char lowfd_l_[PADL_(u_int)]; u_int lowfd; char lowfd_r_[PADR_(u_int)];
+	char highfd_l_[PADL_(u_int)]; u_int highfd; char highfd_r_[PADR_(u_int)];
+	char flags_l_[PADL_(int)]; int flags; char flags_r_[PADR_(int)];
+};
+struct pdsetsigmask_args {
+	char procfd_l_[PADL_(int)]; int procfd; char procfd_r_[PADR_(int)];
+	char mask_l_[PADL_(const sigset_t *)]; const sigset_t * mask; char mask_r_[PADR_(const sigset_t *)];
+};
+struct pdsetsigign_args {
+	char procfd_l_[PADL_(int)]; int procfd; char procfd_r_[PADR_(int)];
+	char ign_l_[PADL_(const sigset_t *)]; const sigset_t * ign; char ign_r_[PADR_(const sigset_t *)];
+};
+struct pdchdir_args {
+	char procfd_l_[PADL_(int)]; int procfd; char procfd_r_[PADR_(int)];
+	char dirfd_l_[PADL_(int)]; int dirfd; char dirfd_r_[PADR_(int)];
+};
+struct pdsetpgid_args {
+	char procfd_l_[PADL_(int)]; int procfd; char procfd_r_[PADR_(int)];
+	char pgid_l_[PADL_(pid_t)]; pid_t pgid; char pgid_r_[PADR_(pid_t)];
+};
+struct pdsetschedparam_args {
+	char procfd_l_[PADL_(int)]; int procfd; char procfd_r_[PADR_(int)];
+	char param_l_[PADL_(const struct sched_param *)]; const struct sched_param * param; char param_r_[PADR_(const struct sched_param *)];
+};
+struct pdsetscheduler_args {
+	char procfd_l_[PADL_(int)]; int procfd; char procfd_r_[PADR_(int)];
+	char policy_l_[PADL_(int)]; int policy; char policy_r_[PADR_(int)];
+	char param_l_[PADL_(const struct sched_param *)]; const struct sched_param * param; char param_r_[PADR_(const struct sched_param *)];
+};
+struct pdresetids_args {
+	char procfd_l_[PADL_(int)]; int procfd; char procfd_r_[PADR_(int)];
+};
+struct pdchroot_args {
+	char procfd_l_[PADL_(int)]; int procfd; char procfd_r_[PADR_(int)];
+	char dirfd_l_[PADL_(int)]; int dirfd; char dirfd_r_[PADR_(int)];
+};
+struct pdcap_enter_args {
+	char procfd_l_[PADL_(int)]; int procfd; char procfd_r_[PADR_(int)];
+};
 int	sys__exit(struct thread *, struct _exit_args *);
 int	sys_fork(struct thread *, struct fork_args *);
 int	sys_read(struct thread *, struct read_args *);
@@ -2353,6 +2409,18 @@ int	sys_pdwait(struct thread *, struct pdwait_args *);
 int	sys_renameat2(struct thread *, struct renameat2_args *);
 int	sys_pdopenpid(struct thread *, struct pdopenpid_args *);
 int	sys_pddupfd(struct thread *, struct pddupfd_args *);
+int	sys_pdsetfd(struct thread *, struct pdsetfd_args *);
+int	sys_pdexec(struct thread *, struct pdexec_args *);
+int	sys_pdsetfdrange(struct thread *, struct pdsetfdrange_args *);
+int	sys_pdsetsigmask(struct thread *, struct pdsetsigmask_args *);
+int	sys_pdsetsigign(struct thread *, struct pdsetsigign_args *);
+int	sys_pdchdir(struct thread *, struct pdchdir_args *);
+int	sys_pdsetpgid(struct thread *, struct pdsetpgid_args *);
+int	sys_pdsetschedparam(struct thread *, struct pdsetschedparam_args *);
+int	sys_pdsetscheduler(struct thread *, struct pdsetscheduler_args *);
+int	sys_pdresetids(struct thread *, struct pdresetids_args *);
+int	sys_pdchroot(struct thread *, struct pdchroot_args *);
+int	sys_pdcap_enter(struct thread *, struct pdcap_enter_args *);
 
 #ifdef COMPAT_43
 
@@ -3357,6 +3425,18 @@ int	freebsd14_setgroups(struct thread *, struct freebsd14_setgroups_args *);
 #define	SYS_AUE_renameat2	AUE_RENAMEAT
 #define	SYS_AUE_pdopenpid	AUE_PDOPENPID
 #define	SYS_AUE_pddupfd	AUE_NULL
+#define	SYS_AUE_pdsetfd	AUE_NULL
+#define	SYS_AUE_pdexec	AUE_NULL
+#define	SYS_AUE_pdsetfdrange	AUE_NULL
+#define	SYS_AUE_pdsetsigmask	AUE_NULL
+#define	SYS_AUE_pdsetsigign	AUE_NULL
+#define	SYS_AUE_pdchdir	AUE_NULL
+#define	SYS_AUE_pdsetpgid	AUE_NULL
+#define	SYS_AUE_pdsetschedparam	AUE_NULL
+#define	SYS_AUE_pdsetscheduler	AUE_NULL
+#define	SYS_AUE_pdresetids	AUE_NULL
+#define	SYS_AUE_pdchroot	AUE_NULL
+#define	SYS_AUE_pdcap_enter	AUE_NULL
 
 #undef PAD_
 #undef PADL_

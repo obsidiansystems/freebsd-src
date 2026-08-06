@@ -113,6 +113,7 @@ void	 procdesc_fork(struct proc *p, pid_t child_pid);
 void	 procdesc_jobstate(struct proc *p);
 int	 kern_pdgetpid(struct thread *, int fd, const cap_rights_t *,
 	    pid_t *pidp);
+int	 kern_pdnew(struct thread *, int pdflags, int *fdp, pid_t *pidp);
 void	 procdesc_new(struct proc *, int);
 void	 procdesc_finit(struct procdesc *, struct file *);
 pid_t	 procdesc_pid(struct file *);
@@ -128,10 +129,17 @@ int	 fget_procdesc(struct thread *td, int pfd,
 
 #include <sys/cdefs.h>
 #include <sys/_types.h>
+#include <sys/_sigset.h>
+#include <sys/caprights.h>
 
 #ifndef _PID_T_DECLARED
 typedef	__pid_t		pid_t;
 #define	_PID_T_DECLARED
+#endif
+
+#ifndef _SIGSET_T_DECLARED
+#define	_SIGSET_T_DECLARED
+typedef	__sigset_t	sigset_t;
 #endif
 
 struct rusage;
@@ -142,6 +150,7 @@ struct rusage;
 __BEGIN_DECLS
 struct __wrusage;
 struct __siginfo;
+struct sched_param;
 
 pid_t	 pdfork(int *, int);
 pid_t	 pdrfork(int *, int, int);
@@ -151,6 +160,18 @@ int	 pdopenpid(pid_t, int);
 int	 pdwait(int, int *, int, struct __wrusage *, struct __siginfo *);
 int	 pddupfd(int, int, int);
 pid_t	 pdrfork_thread(int *, int, int, void *, int (*)(void *), void *);
+int	 pdexec(int, int, const char *, char **, char **, int);
+int	 pdsetfd(int, int, int, const cap_rights_t *);
+int	 pdresetids(int);
+int	 pdsetfdrange(int, u_int, u_int, int);
+int	 pdsetsigmask(int, const sigset_t *);
+int	 pdsetsigign(int, const sigset_t *);
+int	 pdchdir(int, int);
+int	 pdchroot(int, int);
+int	 pdcap_enter(int);
+int	 pdsetpgid(int, pid_t);
+int	 pdsetschedparam(int, const struct sched_param *);
+int	 pdsetscheduler(int, int, const struct sched_param *);
 __END_DECLS
 
 #endif /* _KERNEL */
@@ -168,5 +189,7 @@ __END_DECLS
     (PD_DAEMON | PD_CLOEXEC | PD_NOWAITPID | PD_PTRACE_CAP | PD_PROCCTL_CAP)
 #define	PD_ALLOWED_AT_OPENPID	\
     (PD_DAEMON | PD_CLOEXEC | PD_PTRACE_CAP | PD_PROCCTL_CAP)
+#define	PD_ALLOWED_AT_NEW	\
+    (PD_DAEMON | PD_CLOEXEC | PD_NOWAITPID | PD_PTRACE_CAP | PD_PROCCTL_CAP)
 
 #endif /* !_SYS_PROCDESC_H_ */

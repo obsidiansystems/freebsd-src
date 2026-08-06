@@ -391,10 +391,22 @@ FBSD_1.8 {
 };
 
 FBSD_1.9 {
+	pdcap_enter;
+	pdchdir;
+	pdchroot;
 	pddupfd;
+	pdexec;
 	pdopenpid;
+	pdresetids;
 	pdrfork;
 	pdrfork_thread;
+	pdsetfd;
+	pdsetfdrange;
+	pdsetpgid;
+	pdsetschedparam;
+	pdsetscheduler;
+	pdsetsigign;
+	pdsetsigmask;
 	renameat2;
 };
 

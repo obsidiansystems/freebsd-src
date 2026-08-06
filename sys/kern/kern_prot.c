@@ -451,10 +451,10 @@ struct setpgid_args {
  * is set to NULL.  A return of ERESTART asks the caller to drop the lock and
  * retry.
  *
- * Factored out of sys_setpgid() so the group-change core can be shared with a
- * caller that resolves targp differently.
+ * Shared by setpgid(2) and pdsetpgid(2), which differ only in how they name
+ * and acquire targp.
  */
-static int
+int
 do_setpgid(struct proc *curp, struct proc *targp, pid_t pgid,
     struct pgrp **newpgrpp)
 {

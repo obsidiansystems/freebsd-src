@@ -889,16 +889,31 @@ struct fchdir_args {
 /*
  * Resolve a directory descriptor to a vnode to be made a process's working
  * directory, returned unlocked with a reference held, crossing any mount
- * point as fchdir(2) does.  Split out of sys_fchdir().
+ * point as fchdir(2) does.  AT_FDCWD names the caller's own current directory.
+ * Shared by fchdir(2) and pdchdir(2).
  */
-static int
+int
 chdir_getvp(struct thread *td, int dirfd, struct vnode **vpp)
 {
+	struct pwd *pwd;
 	struct vnode *vp, *tdp;
 	struct mount *mp;
 	struct file *fp;
 	uint8_t fdflags;
 	int error;
+
+	if (dirfd == AT_FDCWD) {
+		pwd = pwd_hold(td);
+		vp = pwd->pwd_cdir;
+		if (vp == NULL) {
+			pwd_drop(pwd);
+			return (EINVAL);
+		}
+		vrefact(vp);
+		pwd_drop(pwd);
+		*vpp = vp;
+		return (0);
+	}
 
 	error = getvnode_path(td, dirfd, &cap_fchdir_rights, &fdflags, &fp);
 	if (error != 0)
@@ -939,6 +954,12 @@ sys_fchdir(struct thread *td, struct fchdir_args *uap)
 	int error;
 
 	AUDIT_ARG_FD(uap->fd);
+	/*
+	 * AT_FDCWD ("the caller's own cwd") is meaningful to pdchdir(2) but not
+	 * to a process changing its own directory; reject it here.
+	 */
+	if (uap->fd == AT_FDCWD)
+		return (EINVAL);
 	error = chdir_getvp(td, uap->fd, &vp);
 	if (error != 0)
 		return (error);
@@ -1028,16 +1049,33 @@ e_vunlock:
 
 /*
  * Resolve a directory descriptor to a vnode to be made a process's root,
- * returned validated and unlocked with a reference held.  The descriptor is a
- * chroot(2) target and is checked as one.  Split out of sys_fchroot().
+ * returned validated and unlocked with a reference held.  AT_FDROOT names the
+ * caller's own root -- propagating the caller's confinement rather than
+ * changing it, so no privilege or permission check applies; any other
+ * descriptor is a chroot(2) target and is checked as one.  Shared by
+ * fchroot(2) and pdchroot(2).
  */
-static int
+int
 chroot_getvp(struct thread *td, int dirfd, struct vnode **vpp)
 {
+	struct pwd *pwd;
 	struct file *fp;
 	struct vnode *vp;
 	uint8_t fdflags;
 	int error;
+
+	if (dirfd == AT_FDROOT) {
+		pwd = pwd_hold(td);
+		vp = pwd->pwd_rdir;
+		if (vp == NULL) {
+			pwd_drop(pwd);
+			return (EINVAL);
+		}
+		vrefact(vp);
+		pwd_drop(pwd);
+		*vpp = vp;
+		return (0);
+	}
 
 	error = getvnode_path(td, dirfd, &cap_fchroot_rights, &fdflags, &fp);
 	if (error != 0)
@@ -1099,6 +1137,13 @@ sys_fchroot(struct thread *td, struct fchroot_args *uap)
 	struct vnode *vp;
 	int error;
 
+	/*
+	 * AT_FDROOT is reserved: someday it may mean "the caller's own root,"
+	 * as it already does for pdchroot(2), but fchroot(2) does not honor it
+	 * yet.
+	 */
+	if (uap->fd == AT_FDROOT)
+		return (EINVAL);
 	error = chroot_getvp(td, uap->fd, &vp);
 	if (error != 0)
 		return (error);

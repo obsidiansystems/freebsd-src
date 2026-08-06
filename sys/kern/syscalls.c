@@ -1,6 +1,7 @@
 /*
  * System call names.
  *
+ *
  * DO NOT EDIT-- this file is automatically @generated.
  */
 
@@ -610,4 +611,16 @@ const char *syscallnames[] = {
 	"renameat2",			/* 602 = renameat2 */
 	"pdopenpid",			/* 603 = pdopenpid */
 	"pddupfd",			/* 604 = pddupfd */
+	"pdsetfd",			/* 605 = pdsetfd */
+	"pdexec",			/* 606 = pdexec */
+	"pdsetfdrange",			/* 607 = pdsetfdrange */
+	"pdsetsigmask",			/* 608 = pdsetsigmask */
+	"pdsetsigign",			/* 609 = pdsetsigign */
+	"pdchdir",			/* 610 = pdchdir */
+	"pdsetpgid",			/* 611 = pdsetpgid */
+	"pdsetschedparam",			/* 612 = pdsetschedparam */
+	"pdsetscheduler",			/* 613 = pdsetscheduler */
+	"pdresetids",			/* 614 = pdresetids */
+	"pdchroot",			/* 615 = pdchroot */
+	"pdcap_enter",			/* 616 = pdcap_enter */
 };

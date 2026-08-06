@@ -238,11 +238,19 @@ typedef	__pid_t		pid_t;
 
 #if __POSIX_VISIBLE >= 200809
 /*
- * Magic value that specify the use of the current working directory
+ * Magic value that specifies the use of the current working directory
  * to determine the target of relative file paths in the openat() and
  * similar syscalls.
  */
 #define	AT_FDCWD		-100
+/*
+ * Magic value that specifies the use of the root directory to determine
+ * the target of relative file paths.
+ *
+ * Currently only used by pdchroot(2) and an error everywhere else, but
+ * in the future it may work everywhere that AT_FDCWD does.
+ */
+#define	AT_FDROOT		-99
 
 /*
  * Miscellaneous flags for the *at() syscalls.
