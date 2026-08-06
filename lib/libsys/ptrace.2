@@ -131,10 +131,19 @@ is typically passed there.
 Similarly, for operations affecting only a thread, the thread ID
 needs to be passed.
 .Pp
+If the
+.Fa request
+argument is or-ed with the
+.Dv PT_PROCDESC
+flag, then the
+.Fa pid
+argument is interpreted as the process descriptor.
+The call operates on the process referenced by the descriptor.
+.Pp
 Still, for global operations, the ID of any thread can be used as the
 target, and system will perform the request on the process owning
 that thread.
-If a thread operation got the process ID as
+If a thread operation got the process ID or the process descriptor as
 .Fa pid ,
 the system randomly selects a thread from among the threads owned
 by the process.

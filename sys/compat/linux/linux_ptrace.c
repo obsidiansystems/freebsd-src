@@ -127,7 +127,8 @@ linux_ptrace_status(struct thread *td, pid_t pid, int status)
 	int error;
 
 	saved_retval = td->td_retval[0];
-	error = kern_ptrace(td, PT_LWPINFO, pid, &lwpinfo, sizeof(lwpinfo));
+	error = kern_ptrace(td, false, PT_LWPINFO, pid, &lwpinfo,
+	    sizeof(lwpinfo));
 	td->td_retval[0] = saved_retval;
 	if (error != 0) {
 		linux_msg(td, "PT_LWPINFO failed with error %d", error);
@@ -161,7 +162,7 @@ linux_ptrace_peek(struct thread *td, pid_t pid, void *addr, void *data)
 {
 	int error;
 
-	error = kern_ptrace(td, PT_READ_I, pid, addr, 0);
+	error = kern_ptrace(td, false, PT_READ_I, pid, addr, 0);
 	if (error == 0)
 		error = copyout(td->td_retval, data, sizeof(l_int));
 	else if (error == ENOMEM)
@@ -222,7 +223,8 @@ linux_ptrace_setoptions(struct thread *td, pid_t pid, l_ulong data)
 		pem->ptrace_flags &= ~LINUX_PTRACE_O_TRACEEXIT;
 	}
 
-	return (kern_ptrace(td, PT_SET_EVENT_MASK, pid, &mask, sizeof(mask)));
+	return (kern_ptrace(td, false, PT_SET_EVENT_MASK, pid, &mask,
+	    sizeof(mask)));
 }
 
 static int
@@ -240,7 +242,8 @@ linux_ptrace_getsiginfo(struct thread *td, pid_t pid, l_ulong data)
 	l_siginfo_t l_siginfo;
 	int error, sig;
 
-	error = kern_ptrace(td, PT_LWPINFO, pid, &lwpinfo, sizeof(lwpinfo));
+	error = kern_ptrace(td, false, PT_LWPINFO, pid, &lwpinfo,
+	    sizeof(lwpinfo));
 	if (error != 0) {
 		linux_msg(td, "PT_LWPINFO failed with error %d", error);
 		return (error);
@@ -266,7 +269,7 @@ linux_ptrace_getregs(struct thread *td, pid_t pid, void *data)
 	struct linux_pt_regset l_regset;
 	int error;
 
-	error = kern_ptrace(td, PT_GETREGS, pid, &b_reg, 0);
+	error = kern_ptrace(td, false, PT_GETREGS, pid, &b_reg, 0);
 	if (error != 0)
 		return (error);
 
@@ -290,7 +293,7 @@ linux_ptrace_setregs(struct thread *td, pid_t pid, void *data)
 	if (error != 0)
 		return (error);
 	linux_to_bsd_regset(&b_reg, &l_regset);
-	error = kern_ptrace(td, PT_SETREGS, pid, &b_reg, 0);
+	error = kern_ptrace(td, false, PT_SETREGS, pid, &b_reg, 0);
 	return (error);
 }
 
@@ -309,7 +312,7 @@ linux_ptrace_getregset_prstatus(struct thread *td, pid_t pid, l_ulong data)
 		return (error);
 	}
 
-	error = kern_ptrace(td, PT_GETREGS, pid, &b_reg, 0);
+	error = kern_ptrace(td, false, PT_GETREGS, pid, &b_reg, 0);
 	if (error != 0)
 		return (error);
 
@@ -351,7 +354,7 @@ linux_ptrace_getregset_prfpreg(struct thread *td, pid_t pid, l_ulong data)
 		return (error);
 	}
 
-	error = kern_ptrace(td, PT_GETFPREGS, pid, &b_fpreg, 0);
+	error = kern_ptrace(td, false, PT_GETFPREGS, pid, &b_fpreg, 0);
 	if (error != 0)
 		return (error);
 
@@ -387,13 +390,15 @@ linux_ptrace_getregset_xstate(struct thread *td, pid_t pid, l_ulong data)
 		return (error);
 	}
 
-	error = kern_ptrace(td, PT_GETXSTATE_INFO, pid, &info, sizeof(info));
+	error = kern_ptrace(td, false, PT_GETXSTATE_INFO, pid, &info,
+	    sizeof(info));
 	if (error != 0)
 		return (error);
 
 	xstate = malloc(info.xsave_len, M_LINUX, M_WAITOK | M_ZERO);
 
-	error = kern_ptrace(td, PT_GETXSTATE, pid, xstate, info.xsave_len);
+	error = kern_ptrace(td, false, PT_GETXSTATE, pid, xstate,
+	    info.xsave_len);
 	if (error != 0) {
 		free(xstate, M_LINUX);
 		return (error);
@@ -454,7 +459,8 @@ linux_ptrace_get_syscall_info(struct thread *td, pid_t pid,
 	struct syscall_info si;
 	int error;
 
-	error = kern_ptrace(td, PT_LWPINFO, pid, &lwpinfo, sizeof(lwpinfo));
+	error = kern_ptrace(td, false, PT_LWPINFO, pid, &lwpinfo,
+	    sizeof(lwpinfo));
 	if (error != 0) {
 		linux_msg(td, "PT_LWPINFO failed with error %d", error);
 		return (error);
@@ -465,7 +471,7 @@ linux_ptrace_get_syscall_info(struct thread *td, pid_t pid,
 	if (lwpinfo.pl_flags & PL_FLAG_SCE) {
 		si.op = LINUX_PTRACE_SYSCALL_INFO_ENTRY;
 		si.entry.nr = lwpinfo.pl_syscall_code;
-		error = kern_ptrace(td, PTLINUX_GET_SC_ARGS, pid,
+		error = kern_ptrace(td, false, PTLINUX_GET_SC_ARGS, pid,
 		    si.entry.args, sizeof(si.entry.args));
 		if (error != 0) {
 			linux_msg(td,
@@ -474,7 +480,8 @@ linux_ptrace_get_syscall_info(struct thread *td, pid_t pid,
 		}
 	} else if (lwpinfo.pl_flags & PL_FLAG_SCX) {
 		si.op = LINUX_PTRACE_SYSCALL_INFO_EXIT;
-		error = kern_ptrace(td, PT_GET_SC_RET, pid, &sr, sizeof(sr));
+		error = kern_ptrace(td, false, PT_GET_SC_RET, pid, &sr,
+		    sizeof(sr));
 
 		if (error != 0) {
 			linux_msg(td, "PT_GET_SC_RET failed with error %d",
@@ -505,7 +512,7 @@ linux_ptrace_get_syscall_info(struct thread *td, pid_t pid,
 		si.op = LINUX_PTRACE_SYSCALL_INFO_NONE;
 	}
 
-	error = kern_ptrace(td, PT_GETREGS, pid, &b_reg, 0);
+	error = kern_ptrace(td, false, PT_GETREGS, pid, &b_reg, 0);
 	if (error != 0)
 		return (error);
 
@@ -534,7 +541,7 @@ linux_ptrace(struct thread *td, struct linux_ptrace_args *uap)
 
 	switch (uap->req) {
 	case LINUX_PTRACE_TRACEME:
-		error = kern_ptrace(td, PT_TRACE_ME, 0, 0, 0);
+		error = kern_ptrace(td, false, PT_TRACE_ME, 0, 0, 0);
 		break;
 	case LINUX_PTRACE_PEEKTEXT:
 	case LINUX_PTRACE_PEEKDATA:
@@ -552,13 +559,14 @@ linux_ptrace(struct thread *td, struct linux_ptrace_args *uap)
 		break;
 	case LINUX_PTRACE_POKETEXT:
 	case LINUX_PTRACE_POKEDATA:
-		error = kern_ptrace(td, PT_WRITE_D, pid, addr, uap->data);
+		error = kern_ptrace(td, false, PT_WRITE_D, pid, addr,
+		    uap->data);
 		if (error != 0)
 			goto out;
 		/*
 		 * Linux expects this syscall to write 64 bits, not 32.
 		 */
-		error = kern_ptrace(td, PT_WRITE_D, pid,
+		error = kern_ptrace(td, false, PT_WRITE_D, pid,
 		    (void *)(uap->addr + 4), uap->data >> 32);
 		break;
 	case LINUX_PTRACE_POKEUSER:
@@ -568,16 +576,17 @@ linux_ptrace(struct thread *td, struct linux_ptrace_args *uap)
 		error = map_signum(uap->data, &sig);
 		if (error != 0)
 			break;
-		error = kern_ptrace(td, PT_CONTINUE, pid, (void *)1, sig);
+		error = kern_ptrace(td, false, PT_CONTINUE, pid, (void *)1,
+		    sig);
 		break;
 	case LINUX_PTRACE_KILL:
-		error = kern_ptrace(td, PT_KILL, pid, addr, uap->data);
+		error = kern_ptrace(td, false, PT_KILL, pid, addr, uap->data);
 		break;
 	case LINUX_PTRACE_SINGLESTEP:
 		error = map_signum(uap->data, &sig);
 		if (error != 0)
 			break;
-		error = kern_ptrace(td, PT_STEP, pid, (void *)1, sig);
+		error = kern_ptrace(td, false, PT_STEP, pid, (void *)1, sig);
 		break;
 	case LINUX_PTRACE_GETREGS:
 		error = linux_ptrace_getregs(td, pid, (void *)uap->data);
@@ -586,19 +595,21 @@ linux_ptrace(struct thread *td, struct linux_ptrace_args *uap)
 		error = linux_ptrace_setregs(td, pid, (void *)uap->data);
 		break;
 	case LINUX_PTRACE_ATTACH:
-		error = kern_ptrace(td, PT_ATTACH, pid, addr, uap->data);
+		error = kern_ptrace(td, false, PT_ATTACH, pid, addr,
+		    uap->data);
 		break;
 	case LINUX_PTRACE_DETACH:
 		error = map_signum(uap->data, &sig);
 		if (error != 0)
 			break;
-		error = kern_ptrace(td, PT_DETACH, pid, (void *)1, sig);
+		error = kern_ptrace(td, false, PT_DETACH, pid, (void *)1, sig);
 		break;
 	case LINUX_PTRACE_SYSCALL:
 		error = map_signum(uap->data, &sig);
 		if (error != 0)
 			break;
-		error = kern_ptrace(td, PT_SYSCALL, pid, (void *)1, sig);
+		error = kern_ptrace(td, false, PT_SYSCALL, pid, (void *)1,
+		    sig);
 		break;
 	case LINUX_PTRACE_SETOPTIONS:
 		error = linux_ptrace_setoptions(td, pid, uap->data);

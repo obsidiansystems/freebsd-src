@@ -36,6 +36,8 @@
 #include <sys/param.h>
 #include <machine/reg.h>
 
+#define	PT_PROCDESC	0x80000000	/* pid is procdesc */
+
 #define	PT_TRACE_ME	0	/* child declares it's being traced */
 #define	PT_READ_I	1	/* read word in child's I space */
 #define	PT_READ_D	2	/* read word in child's D space */

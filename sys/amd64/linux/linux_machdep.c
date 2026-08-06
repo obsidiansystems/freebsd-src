@@ -326,7 +326,8 @@ linux_ptrace_getregs_machdep(struct thread *td, pid_t pid,
 	l_regset->fs_base = pcb->pcb_fsbase;
 	l_regset->gs_base = pcb->pcb_gsbase;
 
-	error = kern_ptrace(td, PT_LWPINFO, pid, &lwpinfo, sizeof(lwpinfo));
+	error = kern_ptrace(td, false, PT_LWPINFO, pid, &lwpinfo,
+	    sizeof(lwpinfo));
 	if (error != 0) {
 		linux_msg(td, "PT_LWPINFO failed with error %d", error);
 		return (error);
@@ -362,10 +363,10 @@ linux_ptrace_peekuser(struct thread *td, pid_t pid, void *addr, void *data)
 	}
 
 	if (LINUX_URO(addr, fs_base))
-		return (kern_ptrace(td, PT_GETFSBASE, pid, data, 0));
+		return (kern_ptrace(td, false, PT_GETFSBASE, pid, data, 0));
 	if (LINUX_URO(addr, gs_base))
-		return (kern_ptrace(td, PT_GETGSBASE, pid, data, 0));
-	if ((error = kern_ptrace(td, PT_GETREGS, pid, &b_reg, 0)) != 0)
+		return (kern_ptrace(td, false, PT_GETGSBASE, pid, data, 0));
+	if ((error = kern_ptrace(td, false, PT_GETREGS, pid, &b_reg, 0)) != 0)
 		return (error);
 	bsd_to_linux_regset(&b_reg, &reg);
 	val = *(&reg.r15 + ((uintptr_t)addr / sizeof(reg.r15)));
@@ -427,9 +428,9 @@ linux_ptrace_pokeuser(struct thread *td, pid_t pid, void *addr, void *data)
 	}
 
 	if (LINUX_URO(addr, fs_base))
-		return (kern_ptrace(td, PT_SETFSBASE, pid, data, 0));
+		return (kern_ptrace(td, false, PT_SETFSBASE, pid, data, 0));
 	if (LINUX_URO(addr, gs_base))
-		return (kern_ptrace(td, PT_SETGSBASE, pid, data, 0));
+		return (kern_ptrace(td, false, PT_SETGSBASE, pid, data, 0));
 	for (i = 0; i < nitems(linux_segregs_off); i++) {
 		if ((uintptr_t)addr == linux_segregs_off[i].reg) {
 			if (linux_invalid_selector((uintptr_t)data))
@@ -438,13 +439,13 @@ linux_ptrace_pokeuser(struct thread *td, pid_t pid, void *addr, void *data)
 				return (EIO);
 		}
 	}
-	if ((error = kern_ptrace(td, PT_GETREGS, pid, &b_reg, 0)) != 0)
+	if ((error = kern_ptrace(td, false, PT_GETREGS, pid, &b_reg, 0)) != 0)
 		return (error);
 	bsd_to_linux_regset(&b_reg, &reg);
 	*(&reg.r15 + ((uintptr_t)addr / sizeof(reg.r15))) = (uint64_t)data;
 	linux_to_bsd_regset(&b_reg1, &reg);
 	b_reg1.r_err = b_reg.r_err;
 	b_reg1.r_trapno = b_reg.r_trapno;
-	return (kern_ptrace(td, PT_SETREGS, pid, &b_reg, 0));
+	return (kern_ptrace(td, false, PT_SETREGS, pid, &b_reg, 0));
 }
 #undef LINUX_URO

@@ -308,8 +308,8 @@ int	kern_pread(struct thread *td, int fd, void *buf, size_t nbyte,
 int	kern_preadv(struct thread *td, int fd, struct uio *auio, off_t offset);
 int	kern_pselect(struct thread *td, int nd, fd_set *in, fd_set *ou,
 	    fd_set *ex, struct timeval *tvp, sigset_t *uset, int abi_nfdbits);
-int	kern_ptrace(struct thread *td, int req, pid_t pid, void *addr,
-	    int data);
+int	kern_ptrace(struct thread *td, bool pd_mode, int req, pid_t pid,
+	    void *addr, int data);
 int	kern_pwrite(struct thread *td, int fd, const void *buf, size_t nbyte,
 	    off_t offset);
 int	kern_pwritev(struct thread *td, int fd, struct uio *auio, off_t offset);

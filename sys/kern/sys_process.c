@@ -32,7 +32,7 @@
  */
 
 #include <sys/systm.h>
-#include <sys/caprights.h>
+#include <sys/capsicum.h>
 #include <sys/filedesc.h>
 #include <sys/imgact.h>
 #include <sys/ktr.h>
@@ -43,6 +43,7 @@
 #include <sys/mutex.h>
 #include <sys/priv.h>
 #include <sys/proc.h>
+#include <sys/procdesc.h>
 #include <sys/ptrace.h>
 #include <sys/reg.h>
 #include <sys/rwlock.h>
@@ -738,6 +739,7 @@ sys_ptrace(struct thread *td, struct ptrace_args *uap)
 	syscallarg_t pscr_args[nitems(td->td_sa.args)];
 	void *addr;
 	int error;
+	bool pd_mode;
 
 	if (!allow_ptrace)
 		return (ENOSYS);
@@ -747,6 +749,9 @@ sys_ptrace(struct thread *td, struct ptrace_args *uap)
 	AUDIT_ARG_CMD(uap->req);
 	AUDIT_ARG_VALUE(uap->data);
 	addr = &r;
+	pd_mode = (uap->req & PT_PROCDESC) != 0;
+	uap->req &= ~PT_PROCDESC;
+
 	switch (uap->req) {
 	case PT_GET_EVENT_MASK:
 	case PT_LWPINFO:
@@ -835,7 +840,7 @@ sys_ptrace(struct thread *td, struct ptrace_args *uap)
 	if (error != 0)
 		return (error);
 
-	error = kern_ptrace(td, uap->req, uap->pid, addr, uap->data);
+	error = kern_ptrace(td, pd_mode, uap->req, uap->pid, addr, uap->data);
 	if (error != 0)
 		return (error);
 
@@ -1055,7 +1060,8 @@ ptrace_sel_coredump_thread(struct proc *p)
 }
 
 int
-kern_ptrace(struct thread *td, int req, pid_t pid, void *addr, int data)
+kern_ptrace(struct thread *td, bool pd_mode, int req, int pid, void *addr,
+    int data)
 {
 	struct iovec iov;
 	struct uio uio;
@@ -1069,6 +1075,7 @@ kern_ptrace(struct thread *td, int req, pid_t pid, void *addr, int data)
 	struct ptrace_coredump *pc;
 	struct thr_coredump_req *tcq;
 	struct thr_syscall_req *tsr;
+	struct file *pfp;
 	struct ptrace_child *children, *ptc;
 	int error, num, num1, tmp;
 	lwpid_t tid = 0, *buf;
@@ -1080,6 +1087,7 @@ kern_ptrace(struct thread *td, int req, pid_t pid, void *addr, int data)
 	curp = td->td_proc;
 	proctree_locked = false;
 	p2_req_set = false;
+	pfp = NULL;
 
 	/* Lock proctree before locking the process. */
 	switch (req) {
@@ -1108,7 +1116,17 @@ kern_ptrace(struct thread *td, int req, pid_t pid, void *addr, int data)
 		p = td->td_proc;
 		PROC_LOCK(p);
 	} else {
-		if (pid <= PID_MAX) {
+		if (pd_mode) {
+			if (!proctree_locked)
+				sx_slock(&proctree_lock);
+			error = fget_procdesc(td, pid, &cap_ptrace_rights,
+			    EINVAL, &pfp, NULL, &p);
+			if (!proctree_locked)
+				sx_sunlock(&proctree_lock);
+			if (error != 0)
+				goto fail_proctree;
+			tid = pid = p->p_pid;
+		} else if (pid <= PID_MAX) {
 			if ((p = pfind(pid)) == NULL) {
 				if (proctree_locked)
 					sx_xunlock(&proctree_lock);
@@ -2020,8 +2038,11 @@ fail:
 		p->p_flag2 &= ~P2_PTRACEREQ;
 	}
 	PROC_UNLOCK(p);
+fail_proctree:
 	if (proctree_locked)
 		sx_xunlock(&proctree_lock);
+	if (pfp != NULL)
+		fdrop(pfp, td);
 	return (error);
 }
 #undef PROC_READ
