@@ -3443,4 +3443,20 @@
 		);
 	}
 
+605	AUE_NULL	STD|CAPENABLED {
+		int pdsetfd(
+		    int procfd,
+		    int remotefd,
+		    int localfd
+		);
+	}
+606	AUE_NULL	STD|CAPENABLED {
+		int pdexec(
+		    int procfd,
+		    int fd,
+		    _In_z_ char **argv,
+		    _In_z_ char **envv,
+		    int flags
+		);
+	}
 ; vim: syntax=off

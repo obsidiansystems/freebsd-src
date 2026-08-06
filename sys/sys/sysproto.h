@@ -1,6 +1,7 @@
 /*
  * System call prototypes.
  *
+ *
  * DO NOT EDIT-- this file is automatically @generated.
  */
 
@@ -1941,6 +1942,18 @@ struct pddupfd_args {
 	char fd_l_[PADL_(int)]; int fd; char fd_r_[PADR_(int)];
 	char flags_l_[PADL_(int)]; int flags; char flags_r_[PADR_(int)];
 };
+struct pdsetfd_args {
+	char procfd_l_[PADL_(int)]; int procfd; char procfd_r_[PADR_(int)];
+	char remotefd_l_[PADL_(int)]; int remotefd; char remotefd_r_[PADR_(int)];
+	char localfd_l_[PADL_(int)]; int localfd; char localfd_r_[PADR_(int)];
+};
+struct pdexec_args {
+	char procfd_l_[PADL_(int)]; int procfd; char procfd_r_[PADR_(int)];
+	char fd_l_[PADL_(int)]; int fd; char fd_r_[PADR_(int)];
+	char argv_l_[PADL_(char **)]; char ** argv; char argv_r_[PADR_(char **)];
+	char envv_l_[PADL_(char **)]; char ** envv; char envv_r_[PADR_(char **)];
+	char flags_l_[PADL_(int)]; int flags; char flags_r_[PADR_(int)];
+};
 int	sys__exit(struct thread *, struct _exit_args *);
 int	sys_fork(struct thread *, struct fork_args *);
 int	sys_read(struct thread *, struct read_args *);
@@ -2353,6 +2366,8 @@ int	sys_pdwait(struct thread *, struct pdwait_args *);
 int	sys_renameat2(struct thread *, struct renameat2_args *);
 int	sys_pdopenpid(struct thread *, struct pdopenpid_args *);
 int	sys_pddupfd(struct thread *, struct pddupfd_args *);
+int	sys_pdsetfd(struct thread *, struct pdsetfd_args *);
+int	sys_pdexec(struct thread *, struct pdexec_args *);
 
 #ifdef COMPAT_43
 
@@ -3357,6 +3372,8 @@ int	freebsd14_setgroups(struct thread *, struct freebsd14_setgroups_args *);
 #define	SYS_AUE_renameat2	AUE_RENAMEAT
 #define	SYS_AUE_pdopenpid	AUE_PDOPENPID
 #define	SYS_AUE_pddupfd	AUE_NULL
+#define	SYS_AUE_pdsetfd	AUE_NULL
+#define	SYS_AUE_pdexec	AUE_NULL
 
 #undef PAD_
 #undef PADL_

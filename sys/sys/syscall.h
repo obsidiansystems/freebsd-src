@@ -1,6 +1,7 @@
 /*
  * System call numbers.
  *
+ *
  * DO NOT EDIT-- this file is automatically @generated.
  */
 
@@ -543,4 +544,6 @@
 #define	SYS_renameat2	602
 #define	SYS_pdopenpid	603
 #define	SYS_pddupfd	604
-#define	SYS_MAXSYSCALL	605
+#define	SYS_pdsetfd	605
+#define	SYS_pdexec	606
+#define	SYS_MAXSYSCALL	607

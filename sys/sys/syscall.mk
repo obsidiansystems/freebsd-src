@@ -1,6 +1,7 @@
 #
 # FreeBSD system call object files.
 #
+#
 # DO NOT EDIT-- this file is automatically @generated.
 #
 
@@ -446,4 +447,6 @@ MIASM =  \
 	pdwait.o \
 	renameat2.o \
 	pdopenpid.o \
-	pddupfd.o
+	pddupfd.o \
+	pdsetfd.o \
+	pdexec.o

@@ -851,7 +851,11 @@ struct proc {
 #define	P_HWPMC		0x00800000	/* Process is using HWPMCs */
 #define	P_JAILED	0x01000000	/* Process is in jail. */
 #define	P_TOTAL_STOP	0x02000000	/* Stopped in stop_all_proc. */
-#define	P_INEXEC	0x04000000	/* Process is in execve(). */
+#define	P_INEXEC	0x04000000	/* Process is not yet scheduled. Either
+					   it is in execve() (the original
+					   use-case) or it is an embryonic
+					   process whose state is still being
+					   set up (builder pattern). */
 #define	P_STATCHILD	0x08000000	/* Child process stopped or exited. */
 #define	P_INMEM		0x10000000	/* Loaded into memory, always set. */
 #define	P_ASYNC_EXIT	0x20000000	/* XXX */
@@ -1188,6 +1192,7 @@ void	fork_proc_tree(struct proc *, struct proc *, bool);
 void	fork_exit(void (*)(void *, struct trapframe *), void *,
 	    struct trapframe *);
 void	fork_return(struct thread *, struct trapframe *);
+void	proc_destroy_embryonic(struct proc *);
 int	inferior(struct proc *p);
 void	itimer_proc_continue(struct proc *p);
 void	kqtimer_proc_continue(struct proc *p);
@@ -1229,6 +1234,7 @@ void	pstats_fork(struct pstats *src, struct pstats *dst);
 void	pstats_free(struct pstats *ps);
 void	proc_clear_orphan(struct proc *p);
 void	reaper_abandon_children(struct proc *p, bool exiting);
+void	reaper_clear(struct proc *p, struct proc *rp);
 int	securelevel_ge(struct ucred *cr, int level);
 int	securelevel_gt(struct ucred *cr, int level);
 void	sess_hold(struct session *);

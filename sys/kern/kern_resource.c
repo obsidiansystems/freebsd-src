@@ -1494,7 +1494,13 @@ lim_rlimit(struct thread *td, int which, struct rlimit *rlp)
 {
 	struct proc *p = td->td_proc;
 
-	MPASS(td == curthread);
+	/*
+	 * td->td_limit is a per-thread copy-on-write cache, safe to read
+	 * locklessly by the owning thread.  An embryonic process (pdnew(2))
+	 * is not yet running, so its thread's cache is likewise stable and
+	 * may be read by the caller setting it up.
+	 */
+	MPASS(td == curthread || (p->p_flag & P_INEXEC) != 0);
 	KASSERT(which >= 0 && which < RLIM_NLIMITS,
 	    ("request for invalid resource limit"));
 	*rlp = td->td_limit->pl_rlimit[which];

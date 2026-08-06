@@ -1,7 +1,9 @@
 /*
  * System call argument to DTrace register array conversion.
  *
+ *
  * This file is part of the DTrace syscall provider.
+ *
  *
  * DO NOT EDIT-- this file is automatically @generated.
  */
@@ -3570,6 +3572,26 @@ systrace_args(int sysnum, void *params, uint64_t *uarg, int *n_args)
 		iarg[a++] = p->fd; /* int */
 		iarg[a++] = p->flags; /* int */
 		*n_args = 3;
+		break;
+	}
+	/* pdsetfd */
+	case 605: {
+		struct pdsetfd_args *p = params;
+		iarg[a++] = p->procfd; /* int */
+		iarg[a++] = p->remotefd; /* int */
+		iarg[a++] = p->localfd; /* int */
+		*n_args = 3;
+		break;
+	}
+	/* pdexec */
+	case 606: {
+		struct pdexec_args *p = params;
+		iarg[a++] = p->procfd; /* int */
+		iarg[a++] = p->fd; /* int */
+		uarg[a++] = (intptr_t)p->argv; /* char ** */
+		uarg[a++] = (intptr_t)p->envv; /* char ** */
+		iarg[a++] = p->flags; /* int */
+		*n_args = 5;
 		break;
 	}
 	default:
@@ -9567,6 +9589,44 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 			break;
 		};
 		break;
+	/* pdsetfd */
+	case 605:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		case 1:
+			p = "int";
+			break;
+		case 2:
+			p = "int";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* pdexec */
+	case 606:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		case 1:
+			p = "int";
+			break;
+		case 2:
+			p = "userland char **";
+			break;
+		case 3:
+			p = "userland char **";
+			break;
+		case 4:
+			p = "int";
+			break;
+		default:
+			break;
+		};
+		break;
 	default:
 		break;
 	};
@@ -11602,6 +11662,16 @@ systrace_return_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 		break;
 	/* pddupfd */
 	case 604:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* pdsetfd */
+	case 605:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* pdexec */
+	case 606:
 		if (ndx == 0 || ndx == 1)
 			p = "int";
 		break;

@@ -422,7 +422,21 @@ procdesc_close(struct file *fp, struct thread *td)
 	} else {
 		PROC_LOCK(p);
 		AUDIT_ARG_PROCESS(p);
-		if (pd->pd_fpcount == 0) /* last procdesc */ {
+		if (p->p_state == PRS_NEW &&
+		    (p->p_flag & P_INEXEC) != 0) {
+			/*
+			 * Embryonic process that was never started.
+			 * It has no running thread, so we can't send
+			 * SIGKILL.  Directly tear it down.
+			 */
+			pd->pd_proc = NULL;
+			p->p_procdesc = NULL;
+			pd->pd_pid = -1;
+			procdesc_free(pd);
+			PROC_UNLOCK(p);
+			sx_xunlock(&proctree_lock);
+			proc_destroy_embryonic(p);
+		} else if (pd->pd_fpcount == 0) /* last procdesc */ {
 			/*
 			 * If the process is not yet dead, we need to kill it,
 			 * but we can't wait around synchronously for it to go

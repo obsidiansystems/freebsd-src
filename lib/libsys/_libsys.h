@@ -1,7 +1,9 @@
 /*
  * Public system call stubs provided by libsys.
  *
+ *
  * Do not use directly, include <libsys.h> instead.
+ *
  *
  * DO NOT EDIT-- this file is automatically @generated.
  */
@@ -477,6 +479,8 @@ typedef int (__sys_pdwait_t)(int, int *, int, struct __wrusage *, struct __sigin
 typedef int (__sys_renameat2_t)(int, const char *, int, const char *, int);
 typedef int (__sys_pdopenpid_t)(pid_t, int);
 typedef int (__sys_pddupfd_t)(int, int, int);
+typedef int (__sys_pdsetfd_t)(int, int, int);
+typedef int (__sys_pdexec_t)(int, int, char **, char **, int);
 
 _Noreturn void __sys__exit(int rval);
 int __sys_fork(void);
@@ -889,6 +893,8 @@ int __sys_pdwait(int fd, int * status, int options, struct __wrusage * wrusage, 
 int __sys_renameat2(int oldfd, const char * old, int newfd, const char * new, int flags);
 int __sys_pdopenpid(pid_t pid, int flags);
 int __sys_pddupfd(int pd, int fd, int flags);
+int __sys_pdsetfd(int procfd, int remotefd, int localfd);
+int __sys_pdexec(int procfd, int fd, char ** argv, char ** envv, int flags);
 __END_DECLS
 
 #endif /* __LIBSYS_H_ */

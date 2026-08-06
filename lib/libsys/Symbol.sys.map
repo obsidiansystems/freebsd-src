@@ -392,9 +392,11 @@ FBSD_1.8 {
 
 FBSD_1.9 {
 	pddupfd;
+	pdexec;
 	pdopenpid;
 	pdrfork;
 	pdrfork_thread;
+	pdsetfd;
 	renameat2;
 };
 

@@ -262,10 +262,13 @@ int	finstall(struct thread *td, struct file *fp, int *resultfd, int flags,
 	    struct filecaps *fcaps);
 int	finstall_refed(struct thread *td, struct file *fp, int *resultfd, int flags,
 	    struct filecaps *fcaps);
+int	finstall_at(struct thread *td, struct proc *p, struct file *fp,
+	    int atfd, int flags, struct filecaps *fcaps);
 int	fdalloc(struct thread *td, int minfd, int *result);
 int	fdallocn(struct thread *td, int minfd, int *fds, int n);
 int	fdcheckstd(struct thread *td);
 void	fdclose(struct thread *td, struct file *fp, int idx);
+bool	fdesc_is_unsafe(struct file *fp);
 void	fdcloseexec(struct thread *td);
 void	fdsetugidsafety(struct thread *td);
 struct	filedesc *fdcopy(struct filedesc *fdp, struct proc *p1);

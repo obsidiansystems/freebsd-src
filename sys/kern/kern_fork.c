@@ -213,6 +213,33 @@ sys_pdrfork(struct thread *td, struct pdrfork_args *uap)
 		return (EXTERROR(EINVAL,
 		    "Kernel-only flags %#jx", uap->rfflags));
 
+	/*
+	 * RFEMBRYO creates a process with no address space and no program,
+	 * to be filled in with pdexec(2) and released with pdstart(2).
+	 * Almost every other rfork(2) flag describes what the new process
+	 * inherits, and an embryo inherits nothing, so it must appear alone.
+	 */
+	if ((uap->rfflags & RFEMBRYO) != 0) {
+		pid_t epid;
+
+		if (uap->rfflags != RFEMBRYO)
+			return (EXTERROR(EINVAL,
+			    "RFEMBRYO must be the only flag %#jx",
+			    uap->rfflags));
+		if ((uap->pdflags & ~PD_ALLOWED_AT_NEW) != 0)
+			return (EXTERROR(EINVAL,
+			    "Bad pdflags %#jx", uap->pdflags));
+		error = kern_pdnew(td, uap->pdflags, &fd, &epid);
+		if (error != 0)
+			return (error);
+		td->td_retval[0] = epid;
+		td->td_retval[1] = 0;
+		error = copyout(&fd, uap->fdp, sizeof(fd));
+		if (error != 0)
+			kern_close(td, fd);
+		return (error);
+	}
+
 	/* RFSPAWN must not appear with others */
 	if ((uap->rfflags & RFSPAWN) != 0) {
 		if (uap->rfflags != RFSPAWN)
@@ -1393,6 +1420,122 @@ fork_return(struct thread *td, struct trapframe *frame)
 	if (KTRPOINT(td, KTR_SYSRET))
 		ktrsysret(td->td_sa.code, 0, 0);
 #endif
+}
+
+/*
+ * Destroy an embryonic process that was never started.
+ * Called when pdnew() exec fails or when the procdesc is closed
+ * before pdstart().
+ */
+void
+proc_destroy_embryonic(struct proc *p)
+{
+	struct thread *td;
+
+	PROC_LOCK_ASSERT(p, MA_NOTOWNED);
+	MPASS(p->p_state == PRS_NEW);
+	MPASS(p->p_flag & P_INEXEC);
+
+	td = FIRST_THREAD_IN_PROC(p);
+
+	/*
+	 * Remove from process group.
+	 */
+	sx_xlock(&proctree_lock);
+	PROC_LOCK(p);
+	proc_clear_orphan(p);
+	LIST_REMOVE(p, p_sibling);
+	PROC_UNLOCK(p);
+	/* Remove from the reaper's list and release the reaper ID if last. */
+	reaper_clear(p, p->p_reaper);
+
+	PGRP_LOCK(p->p_pgrp);
+	LIST_REMOVE(p, p_pglist);
+	PGRP_UNLOCK(p->p_pgrp);
+
+	/*
+	 * Release the PID.  The process descriptor was already disconnected
+	 * by procdesc_close(), so there is no procdesc_reap() to do it.
+	 */
+	proc_id_clear(PROC_ID_PID, p->p_pid);
+	sx_xunlock(&proctree_lock);
+
+	/*
+	 * Remove from global lists.
+	 */
+	sx_xlock(PIDHASHLOCK(p->p_pid));
+	LIST_REMOVE(p, p_hash);
+	sx_xunlock(PIDHASHLOCK(p->p_pid));
+
+	tidhash_remove(td);
+
+	sx_xlock(&allproc_lock);
+	LIST_REMOVE(p, p_list);
+	allproc_gen++;
+	/* Undo the prison_proc_link() done by fork_register_proc(). */
+	prison_proc_unlink(p->p_ucred->cr_prison, p);
+	sx_xunlock(&allproc_lock);
+
+	/*
+	 * Release resources.
+	 */
+	if (p->p_textvp != NULL)
+		vrele(p->p_textvp);
+	if (p->p_textdvp != NULL)
+		vrele(p->p_textdvp);
+	free(p->p_binname, M_PARGS);
+	pargs_drop(p->p_args);
+
+	/*
+	 * Free file descriptors and pwd using the embryonic thread.
+	 * It is not running, but fdescfree/pdescfree just need
+	 * td->td_proc to be correct.
+	 */
+	fdescfree(FIRST_THREAD_IN_PROC(p));
+	pdescfree(FIRST_THREAD_IN_PROC(p));
+
+	sigacts_free(p->p_sigacts);
+	if (p->p_vmspace != NULL)
+		vmspace_free(p->p_vmspace);
+
+	callout_drain(&p->p_itcallout);
+	/*
+	 * lim_fork() unconditionally callout_init_mtx()s p_limco and arms it
+	 * when the parent has a finite RLIMIT_CPU; drain it as exit1() does,
+	 * or it fires on recycled proc memory ~1s after the embryo is freed.
+	 */
+	callout_drain(&p->p_limco);
+
+	/*
+	 * Release the copy-on-write references (credentials, limits) that
+	 * thread_cow_get_proc() cached in the embryonic thread; otherwise
+	 * they dangle once the proc/thread is recycled via proc_zone.
+	 */
+	thread_cow_free(td);
+
+	lim_free(p->p_limit);
+	/*
+	 * p_stats (and the thread, p_ksi) are allocated in proc_init() and
+	 * freed in proc_fini(); they ride with the proc through proc_zone
+	 * recycling, so must NOT be freed here.
+	 */
+
+	PROC_LOCK(p);
+	knlist_detach(p->p_klist);
+	p->p_klist = NULL;
+	PROC_UNLOCK(p);
+
+	prison_proc_free(p->p_ucred->cr_prison);
+
+#ifdef MAC
+	mac_proc_destroy(p);
+#endif
+	racct_proc_exit(p);
+	proc_unset_cred(p, true);
+
+	/* Releases the last tree reference and frees the proc via proc_zone. */
+	PROC_TREE_UNREF(p);
+	atomic_add_int(&nprocs, -1);
 }
 
 static void

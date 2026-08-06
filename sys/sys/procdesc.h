@@ -113,6 +113,7 @@ void	 procdesc_fork(struct proc *p, pid_t child_pid);
 void	 procdesc_jobstate(struct proc *p);
 int	 kern_pdgetpid(struct thread *, int fd, const cap_rights_t *,
 	    pid_t *pidp);
+int	 kern_pdnew(struct thread *, int pdflags, int *fdp, pid_t *pidp);
 void	 procdesc_new(struct proc *, int);
 void	 procdesc_finit(struct procdesc *, struct file *);
 pid_t	 procdesc_pid(struct file *);
@@ -151,6 +152,8 @@ int	 pdopenpid(pid_t, int);
 int	 pdwait(int, int *, int, struct __wrusage *, struct __siginfo *);
 int	 pddupfd(int, int, int);
 pid_t	 pdrfork_thread(int *, int, int, void *, int (*)(void *), void *);
+int	 pdexec(int, int, char **, char **, int);
+int	 pdsetfd(int, int, int);
 __END_DECLS
 
 #endif /* _KERNEL */
@@ -166,5 +169,7 @@ __END_DECLS
 #define	PD_ALLOWED_AT_FORK	\
     (PD_DAEMON | PD_CLOEXEC | PD_NOWAITPID | PD_PTRACE_CAP)
 #define	PD_ALLOWED_AT_OPENPID	(PD_DAEMON | PD_CLOEXEC | PD_PTRACE_CAP)
+#define	PD_ALLOWED_AT_NEW	\
+    (PD_DAEMON | PD_CLOEXEC | PD_NOWAITPID | PD_PTRACE_CAP)
 
 #endif /* !_SYS_PROCDESC_H_ */

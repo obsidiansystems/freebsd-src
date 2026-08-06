@@ -130,7 +130,7 @@ proc_realparent(struct proc *child)
 	return (parent);
 }
 
-static void
+void
 reaper_clear(struct proc *p, struct proc *rp)
 {
 	struct proc *p1;

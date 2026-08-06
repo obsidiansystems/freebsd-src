@@ -4039,6 +4039,7 @@ kern/sys_generic.c		standard
 kern/sys_getrandom.c		standard
 kern/sys_pipe.c			standard
 kern/sys_procdesc.c		standard
+kern/sys_pdnew.c		standard
 kern/sys_process.c		standard
 kern/sys_socket.c		standard
 kern/sys_timerfd.c		standard

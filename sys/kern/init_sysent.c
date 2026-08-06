@@ -1,6 +1,7 @@
 /*
  * System call switch table.
  *
+ *
  * DO NOT EDIT-- this file is automatically @generated.
  */
 
@@ -671,4 +672,6 @@ struct sysent sysent[] = {
 	{ .sy_narg = AS(renameat2_args), .sy_call = (sy_call_t *)sys_renameat2, .sy_auevent = AUE_RENAMEAT, .sy_flags = SYF_CAPENABLED, .sy_thrcnt = SY_THR_STATIC },	/* 602 = renameat2 */
 	{ .sy_narg = AS(pdopenpid_args), .sy_call = (sy_call_t *)sys_pdopenpid, .sy_auevent = AUE_PDOPENPID, .sy_flags = 0, .sy_thrcnt = SY_THR_STATIC },	/* 603 = pdopenpid */
 	{ .sy_narg = AS(pddupfd_args), .sy_call = (sy_call_t *)sys_pddupfd, .sy_auevent = AUE_NULL, .sy_flags = 0, .sy_thrcnt = SY_THR_STATIC },	/* 604 = pddupfd */
+	{ .sy_narg = AS(pdsetfd_args), .sy_call = (sy_call_t *)sys_pdsetfd, .sy_auevent = AUE_NULL, .sy_flags = SYF_CAPENABLED, .sy_thrcnt = SY_THR_STATIC },	/* 605 = pdsetfd */
+	{ .sy_narg = AS(pdexec_args), .sy_call = (sy_call_t *)sys_pdexec, .sy_auevent = AUE_NULL, .sy_flags = SYF_CAPENABLED, .sy_thrcnt = SY_THR_STATIC },	/* 606 = pdexec */
 };
