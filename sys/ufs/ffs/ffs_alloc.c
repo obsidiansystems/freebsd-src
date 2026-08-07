@@ -3542,7 +3542,7 @@ sysctl_ffs_fsck(SYSCTL_HANDLER_ARGS)
 			break;
 		}
 		VOP_UNLOCK(vp);
-		pwd_chdir(td, vp);
+		pwd_chdir(td->td_proc, vp);
 		break;
 
 	case FFS_SET_DOTDOT:

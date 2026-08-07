@@ -885,18 +885,22 @@ struct fchdir_args {
 	int	fd;
 };
 #endif
-int
-sys_fchdir(struct thread *td, struct fchdir_args *uap)
+
+/*
+ * Resolve a directory descriptor to a vnode to be made a process's working
+ * directory, returned unlocked with a reference held, crossing any mount
+ * point as fchdir(2) does.  Split out of sys_fchdir().
+ */
+static int
+chdir_getvp(struct thread *td, int dirfd, struct vnode **vpp)
 {
 	struct vnode *vp, *tdp;
 	struct mount *mp;
 	struct file *fp;
-	int error;
 	uint8_t fdflags;
+	int error;
 
-	AUDIT_ARG_FD(uap->fd);
-	error = getvnode_path(td, uap->fd, &cap_fchdir_rights, &fdflags,
-	    &fp);
+	error = getvnode_path(td, dirfd, &cap_fchdir_rights, &fdflags, &fp);
 	if (error != 0)
 		return (error);
 	if ((fdflags & UF_RESOLVE_BENEATH) != 0) {
@@ -909,7 +913,7 @@ sys_fchdir(struct thread *td, struct fchdir_args *uap)
 	vn_lock(vp, LK_SHARED | LK_RETRY);
 	AUDIT_ARG_VNODE1(vp);
 	error = change_dir(vp, td);
-	while (!error && (mp = vp->v_mountedhere) != NULL) {
+	while (error == 0 && (mp = vp->v_mountedhere) != NULL) {
 		if (vfs_busy(mp, 0))
 			continue;
 		error = VFS_ROOT(mp, LK_SHARED, &tdp);
@@ -924,7 +928,21 @@ sys_fchdir(struct thread *td, struct fchdir_args *uap)
 		return (error);
 	}
 	VOP_UNLOCK(vp);
-	pwd_chdir(td, vp);
+	*vpp = vp;
+	return (0);
+}
+
+int
+sys_fchdir(struct thread *td, struct fchdir_args *uap)
+{
+	struct vnode *vp;
+	int error;
+
+	AUDIT_ARG_FD(uap->fd);
+	error = chdir_getvp(td, uap->fd, &vp);
+	if (error != 0)
+		return (error);
+	pwd_chdir(td->td_proc, vp);
 	return (0);
 }
 
@@ -960,7 +978,7 @@ kern_chdir(struct thread *td, const char *path, enum uio_seg pathseg)
 	}
 	VOP_UNLOCK(nd.ni_vp);
 	NDFREE_PNBUF(&nd);
-	pwd_chdir(td, nd.ni_vp);
+	pwd_chdir(td->td_proc, nd.ni_vp);
 	return (0);
 }
 
@@ -973,7 +991,7 @@ SYSCTL_INT(_security_bsd, OID_AUTO, unprivileged_chroot, CTLFLAG_RW,
  * Takes locked vnode, unlocks it before returning.
  */
 static int
-kern_chroot(struct thread *td, struct vnode *vp)
+kern_chroot_validate(struct thread *td, struct vnode *vp)
 {
 	struct proc *p;
 	int error;
@@ -1002,12 +1020,41 @@ kern_chroot(struct thread *td, struct vnode *vp)
 		goto e_vunlock;
 #endif
 	VOP_UNLOCK(vp);
-	error = pwd_chroot(td, vp);
-	vrele(vp);
-	return (error);
+	return (0);
 e_vunlock:
 	vput(vp);
 	return (error);
+}
+
+/*
+ * Resolve a directory descriptor to a vnode to be made a process's root,
+ * returned validated and unlocked with a reference held.  The descriptor is a
+ * chroot(2) target and is checked as one.  Split out of sys_fchroot().
+ */
+static int
+chroot_getvp(struct thread *td, int dirfd, struct vnode **vpp)
+{
+	struct file *fp;
+	struct vnode *vp;
+	uint8_t fdflags;
+	int error;
+
+	error = getvnode_path(td, dirfd, &cap_fchroot_rights, &fdflags, &fp);
+	if (error != 0)
+		return (error);
+	if ((fdflags & UF_RESOLVE_BENEATH) != 0) {
+		fdrop(fp, td);
+		return (ENOTCAPABLE);
+	}
+	vp = fp->f_vnode;
+	vrefact(vp);
+	fdrop(fp, td);
+	vn_lock(vp, LK_SHARED | LK_RETRY);
+	error = kern_chroot_validate(td, vp);
+	if (error != 0)
+		return (error);
+	*vpp = vp;
+	return (0);
 }
 
 /*
@@ -1030,7 +1077,11 @@ sys_chroot(struct thread *td, struct chroot_args *uap)
 	if (error != 0)
 		return (error);
 	NDFREE_PNBUF(&nd);
-	error = kern_chroot(td, nd.ni_vp);
+	error = kern_chroot_validate(td, nd.ni_vp);
+	if (error != 0)
+		return (error);
+	error = pwd_chroot(td->td_proc, nd.ni_vp);
+	vrele(nd.ni_vp);
 	return (error);
 }
 
@@ -1046,22 +1097,13 @@ int
 sys_fchroot(struct thread *td, struct fchroot_args *uap)
 {
 	struct vnode *vp;
-	struct file *fp;
 	int error;
-	uint8_t fdflags;
 
-	error = getvnode_path(td, uap->fd, &cap_fchroot_rights, &fdflags, &fp);
+	error = chroot_getvp(td, uap->fd, &vp);
 	if (error != 0)
 		return (error);
-	if ((fdflags & UF_RESOLVE_BENEATH) != 0) {
-		fdrop(fp, td);
-		return (ENOTCAPABLE);
-	}
-	vp = fp->f_vnode;
-	vrefact(vp);
-	fdrop(fp, td);
-	vn_lock(vp, LK_SHARED | LK_RETRY);
-	error = kern_chroot(td, vp);
+	error = pwd_chroot(td->td_proc, vp);
+	vrele(vp);
 	return (error);
 }
 

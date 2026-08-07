@@ -57,7 +57,7 @@ zfs_file_open(const char *path, int flags, int mode, zfs_file_t **fpp)
 	int error;
 
 	td = curthread;
-	pwd_ensure_dirs();
+	pwd_ensure_dirs(curproc);
 
 	KASSERT((flags & (O_EXEC | O_PATH)) == 0,
 	    ("invalid flags: 0x%x", flags));

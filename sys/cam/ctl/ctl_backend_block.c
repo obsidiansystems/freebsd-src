@@ -2541,7 +2541,7 @@ ctl_be_block_open(struct ctl_be_block_lun *be_lun, struct ctl_lun_req *req)
 			 "Root filesystem is not mounted");
 		return (1);
 	}
-	pwd_ensure_dirs();
+	pwd_ensure_dirs(curproc);
 
 	value = dnvlist_get_string(cbe_lun->options, "file", NULL);
 	if (value == NULL) {

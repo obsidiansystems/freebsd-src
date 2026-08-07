@@ -370,10 +370,10 @@ struct pwddesc *pdshare(struct pwddesc *pdp);
 void	pdunshare(struct thread *td);
 
 void	pwd_altroot(struct thread *td, struct vnode *altroot_vp);
-void	pwd_chdir(struct thread *td, struct vnode *vp);
-int	pwd_chroot(struct thread *td, struct vnode *vp);
+void	pwd_chdir(struct proc *p, struct vnode *vp);
+int	pwd_chroot(struct proc *p, struct vnode *vp);
 int	pwd_chroot_chdir(struct thread *td, struct vnode *vp);
-void	pwd_ensure_dirs(void);
+void	pwd_ensure_dirs(struct proc *p);
 void	pwd_set_rootvnode(void);
 
 struct pwd *pwd_hold_pwddesc(struct pwddesc *pdp);

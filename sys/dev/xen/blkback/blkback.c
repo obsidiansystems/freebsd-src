@@ -2522,7 +2522,7 @@ xbb_open_backend(struct xbb_softc *xbb)
 	if ((xbb->flags & XBBF_READ_ONLY) == 0)
 		flags |= FWRITE;
 
-	pwd_ensure_dirs();
+	pwd_ensure_dirs(curproc);
 
  again:
 	NDINIT(&nd, LOOKUP, FOLLOW, UIO_SYSSPACE, xbb->dev_name);

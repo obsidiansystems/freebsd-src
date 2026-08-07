@@ -4272,15 +4272,15 @@ pwd_drop(struct pwd *pwd)
 * mac_vnode_check_chroot() to authorize this operation.
 */
 int
-pwd_chroot(struct thread *td, struct vnode *vp)
+pwd_chroot(struct proc *p, struct vnode *vp)
 {
 	struct pwddesc *pdp;
 	struct filedesc *fdp;
 	struct pwd *newpwd, *oldpwd;
 	int error;
 
-	fdp = td->td_proc->p_fd;
-	pdp = td->td_proc->p_pd;
+	fdp = p->p_fd;
+	pdp = p->p_pd;
 	newpwd = pwd_alloc();
 	FILEDESC_SLOCK(fdp);
 	PWDDESC_XLOCK(pdp);
@@ -4315,7 +4315,7 @@ pwd_chroot(struct thread *td, struct vnode *vp)
 }
 
 void
-pwd_chdir(struct thread *td, struct vnode *vp)
+pwd_chdir(struct proc *p, struct vnode *vp)
 {
 	struct pwddesc *pdp;
 	struct pwd *newpwd, *oldpwd;
@@ -4323,7 +4323,7 @@ pwd_chdir(struct thread *td, struct vnode *vp)
 	VNPASS(vp->v_usecount > 0, vp);
 
 	newpwd = pwd_alloc();
-	pdp = td->td_proc->p_pd;
+	pdp = p->p_pd;
 	PWDDESC_XLOCK(pdp);
 	oldpwd = PWDDESC_XLOCKED_LOAD_PWD(pdp);
 	newpwd->pwd_cdir = vp;
@@ -4410,12 +4410,12 @@ pwd_chroot_chdir(struct thread *td, struct vnode *vp)
 }
 
 void
-pwd_ensure_dirs(void)
+pwd_ensure_dirs(struct proc *p)
 {
 	struct pwddesc *pdp;
 	struct pwd *oldpwd, *newpwd;
 
-	pdp = curproc->p_pd;
+	pdp = p->p_pd;
 	PWDDESC_XLOCK(pdp);
 	oldpwd = PWDDESC_XLOCKED_LOAD_PWD(pdp);
 	if (oldpwd->pwd_cdir != NULL && oldpwd->pwd_rdir != NULL &&

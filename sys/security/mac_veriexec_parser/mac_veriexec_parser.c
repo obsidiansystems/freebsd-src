@@ -237,7 +237,7 @@ open_file(const char *path, struct nameidata *nid)
 
 	flags = FREAD;
 
-	pwd_ensure_dirs();
+	pwd_ensure_dirs(curproc);
 
 	NDINIT(nid, LOOKUP, 0, UIO_SYSSPACE, path);
 	rc = vn_open(nid, &flags, 0, NULL);

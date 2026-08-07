@@ -478,7 +478,7 @@ static void
 set_rootvnode(void *arg, int npending)
 {
 
-	pwd_ensure_dirs();
+	pwd_ensure_dirs(curproc);
 	free(arg, M_TEMP);
 }
 
