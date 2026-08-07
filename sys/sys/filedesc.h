@@ -41,6 +41,7 @@
 #include <sys/priority.h>
 #include <sys/seqc.h>
 #include <sys/sx.h>
+#include <sys/_pwd_core.h>
 #include <sys/_smr.h>
 #include <sys/smr_types.h>
 
@@ -84,7 +85,8 @@ struct fdescenttbl {
 #define NDSLOTTYPE	u_long
 
 /*
- * This struct is copy-on-write and allocated from an SMR zone.
+ * This struct (and its struct pwd_core child) are copy-on-write and allocated
+ * from an SMR zone.
  * All fields are constant after initialization apart from the reference count.
  * The ABI root directory is initialized as the root directory and changed
  * during process transiting to or from non-native ABI.
@@ -92,12 +94,19 @@ struct fdescenttbl {
  * Check pwd_* routines for usage.
  */
 struct pwd {
-	u_int		pwd_refcount;
-	struct	vnode	*pwd_cdir;	/* current directory */
-	struct	vnode	*pwd_rdir;	/* root directory */
-	struct	vnode	*pwd_jdir;	/* jail root directory */
-	struct	vnode	*pwd_adir;	/* abi root directory */
+	u_int			pwd_refcount;
+	struct	pwd_core	pwd_core;
+	struct	vnode		*pwd_adir;	/* abi root directory */
 };
+
+/*
+ * Accessors for the embedded lookup directories, so that the many existing
+ * pwd->pwd_cdir style references need not spell out the substruct.
+ */
+#define	pwd_cdir	pwd_core.pwd_core_cdir
+#define	pwd_rdir	pwd_core.pwd_core_rdir
+#define	pwd_jdir	pwd_core.pwd_core_jdir
+
 typedef SMR_POINTER(struct pwd *) smrpwd_t;
 
 struct pwddesc {

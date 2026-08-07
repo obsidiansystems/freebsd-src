@@ -4148,24 +4148,47 @@ chroot_refuse_vdir_fds(struct filedesc *fdp)
 	return (0);
 }
 
+/*
+ * Fill in whichever of dst's directories are not already set, taking a
+ * reference on each: struct pwd is copy-on-write, so every copy owns its own.
+ */
+static void
+pwd_core_fill(struct pwd_core *dst, const struct pwd_core *src)
+{
+
+	if (dst->pwd_core_cdir == NULL && src->pwd_core_cdir != NULL) {
+		vrefact(src->pwd_core_cdir);
+		dst->pwd_core_cdir = src->pwd_core_cdir;
+	}
+
+	if (dst->pwd_core_rdir == NULL && src->pwd_core_rdir != NULL) {
+		vrefact(src->pwd_core_rdir);
+		dst->pwd_core_rdir = src->pwd_core_rdir;
+	}
+
+	if (dst->pwd_core_jdir == NULL && src->pwd_core_jdir != NULL) {
+		vrefact(src->pwd_core_jdir);
+		dst->pwd_core_jdir = src->pwd_core_jdir;
+	}
+}
+
+static void
+pwd_core_release(struct pwd_core *pc)
+{
+
+	if (pc->pwd_core_cdir != NULL)
+		vrele(pc->pwd_core_cdir);
+	if (pc->pwd_core_rdir != NULL)
+		vrele(pc->pwd_core_rdir);
+	if (pc->pwd_core_jdir != NULL)
+		vrele(pc->pwd_core_jdir);
+}
+
 static void
 pwd_fill(struct pwd *oldpwd, struct pwd *newpwd)
 {
 
-	if (newpwd->pwd_cdir == NULL && oldpwd->pwd_cdir != NULL) {
-		vrefact(oldpwd->pwd_cdir);
-		newpwd->pwd_cdir = oldpwd->pwd_cdir;
-	}
-
-	if (newpwd->pwd_rdir == NULL && oldpwd->pwd_rdir != NULL) {
-		vrefact(oldpwd->pwd_rdir);
-		newpwd->pwd_rdir = oldpwd->pwd_rdir;
-	}
-
-	if (newpwd->pwd_jdir == NULL && oldpwd->pwd_jdir != NULL) {
-		vrefact(oldpwd->pwd_jdir);
-		newpwd->pwd_jdir = oldpwd->pwd_jdir;
-	}
+	pwd_core_fill(&newpwd->pwd_core, &oldpwd->pwd_core);
 
 	if (newpwd->pwd_adir == NULL && oldpwd->pwd_adir != NULL) {
 		vrefact(oldpwd->pwd_adir);
@@ -4256,14 +4279,11 @@ pwd_drop(struct pwd *pwd)
 	if (!refcount_release(&pwd->pwd_refcount))
 		return;
 
-	if (pwd->pwd_cdir != NULL)
-		vrele(pwd->pwd_cdir);
-	if (pwd->pwd_rdir != NULL)
-		vrele(pwd->pwd_rdir);
-	if (pwd->pwd_jdir != NULL)
-		vrele(pwd->pwd_jdir);
+	pwd_core_release(&pwd->pwd_core);
+
 	if (pwd->pwd_adir != NULL)
 		vrele(pwd->pwd_adir);
+
 	uma_zfree_smr(pwd_zone, pwd);
 }
 

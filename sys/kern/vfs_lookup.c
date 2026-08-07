@@ -384,8 +384,7 @@ namei_setup(struct nameidata *ndp, struct vnode **dpp, struct pwd **pwdp)
 	 * The reference on ni_rootdir is acquired in the block below to avoid
 	 * back-to-back atomics for absolute lookups.
 	 */
-	namei_setup_rootdir(ndp, cnp, pwd);
-	ndp->ni_topdir = pwd->pwd_jdir;
+	namei_setup_dirs(ndp, cnp, pwd, &pwd->pwd_core);
 
 	if (cnp->cn_pnbuf[0] == '/') {
 		ndp->ni_resflags |= NIRES_ABS;

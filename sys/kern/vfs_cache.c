@@ -6503,8 +6503,7 @@ cache_fplookup(struct nameidata *ndp, enum cache_fpl_status *status,
 	fpl.pwd = pwdp;
 	pwd = pwd_get_smr();
 	*(fpl.pwd) = pwd;
-	namei_setup_rootdir(ndp, cnp, pwd);
-	ndp->ni_topdir = pwd->pwd_jdir;
+	namei_setup_dirs(ndp, cnp, pwd, &pwd->pwd_core);
 
 	if (cnp->cn_pnbuf[0] == '/') {
 		dvp = cache_fpl_handle_root(&fpl);

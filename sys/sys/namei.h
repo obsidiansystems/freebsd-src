@@ -74,9 +74,13 @@ struct nameidata {
 	/*
 	 * Arguments to lookup.
 	 */
-	struct  vnode *ni_startdir;	/* starting directory */
-	struct	vnode *ni_rootdir;	/* logical root directory */
-	struct	vnode *ni_topdir;	/* logical top directory */
+	/*
+	 * The directories this lookup resolves against.  Working state: it is
+	 * derived afresh by namei_setup() on each attempt, since namei() may
+	 * restart, and the lookup consumes the reference on the start
+	 * directory and reassigns it as it descends.
+	 */
+	struct	pwd_core ni_dirs;
 	int	ni_dirfd;		/* starting directory for *at functions */
 	int	ni_lcf;			/* local call flags */
 	/*
@@ -121,6 +125,15 @@ struct nameidata {
 	seqc_t	ni_dvp_seqc;
 	seqc_t	ni_vp_seqc;
 };
+
+/*
+ * Accessors for the working lookup directories, keeping the traditional names.
+ * The start directory is the lookup's analogue of a current directory, and the
+ * root and top directories are the boundaries a lookup may not escape.
+ */
+#define	ni_startdir	ni_dirs.pwd_core_cdir
+#define	ni_rootdir	ni_dirs.pwd_core_rdir
+#define	ni_topdir	ni_dirs.pwd_core_jdir
 
 #ifdef _KERNEL
 
@@ -306,11 +319,20 @@ struct nameidata *vfs_lookup_nameidata(struct componentname *cnp);
 int	vfs_relookup(struct vnode *dvp, struct vnode **vpp,
 	    struct componentname *cnp, bool refstart);
 
-#define namei_setup_rootdir(ndp, cnp, pwd) do {					\
+/*
+ * Derive the working lookup directories for one attempt from "core".  The
+ * start directory is not touched: it is either supplied by the caller or
+ * resolved separately from ni_dirfd.
+ *
+ * The root is the one asymmetry: a lookup starts at the ABI root and only
+ * falls back to the real root once namei() has restarted.
+ */
+#define namei_setup_dirs(ndp, cnp, pwd, core) do {				\
+	ndp->ni_topdir = (core)->pwd_core_jdir;					\
 	if (__predict_true((cnp->cn_flags & ISRESTARTED) == 0))			\
 		ndp->ni_rootdir = pwd->pwd_adir;				\
 	else									\
-		ndp->ni_rootdir = pwd->pwd_rdir;				\
+		ndp->ni_rootdir = (core)->pwd_core_rdir;			\
 } while (0)
 #endif
 
