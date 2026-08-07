@@ -120,7 +120,7 @@ static void	filecaps_copy_finish(const struct filecaps *src,
 static u_long 	*filecaps_free_prep(struct filecaps *fcaps);
 static void	filecaps_free_finish(u_long *ioctls);
 
-static struct pwd *pwd_alloc(void);
+static struct pwd *pwd_alloc(bool);
 
 /*
  * Each process has:
@@ -2390,7 +2390,7 @@ pdinit(struct pwddesc *pdp, bool keeplock)
 	newpdp->pd_cmask = CMASK;
 
 	if (pdp == NULL) {
-		newpwd = pwd_alloc();
+		newpwd = pwd_alloc(false);
 		smr_serialized_store(&newpdp->pd_pwd, newpwd, true);
 		return (newpdp);
 	}
@@ -4194,6 +4194,15 @@ pwd_fill(struct pwd *oldpwd, struct pwd *newpwd)
 		vrefact(oldpwd->pwd_adir);
 		newpwd->pwd_adir = oldpwd->pwd_adir;
 	}
+
+	if (oldpwd->pwd_coredump != NULL) {
+		/*
+		 * The caller must have asked pwd_alloc() for the storage; it
+		 * cannot be allocated here, under the pwddesc lock.
+		 */
+		MPASS(newpwd->pwd_coredump != NULL);
+		pwd_core_fill(newpwd->pwd_coredump, oldpwd->pwd_coredump);
+	}
 }
 
 struct pwd *
@@ -4261,14 +4270,31 @@ pwd_hold_proc(struct proc *p)
 	return (pwd);
 }
 
+/*
+ * Allocate a replacement pwd.  "coredump" asks for storage for the core dump
+ * directories; see struct pwd.  Callers which go on to pwd_fill() must pass
+ * true whenever the pwd being replaced may have them, which for the current
+ * process is exactly IN_CAPABILITY_MODE().  cap_enter(2) sets that before
+ * retaining the directories, so the test never yields a false negative.
+ */
 static struct pwd *
-pwd_alloc(void)
+pwd_alloc(bool coredump)
 {
 	struct pwd *pwd;
 
 	pwd = uma_zalloc_smr(pwd_zone, M_WAITOK);
 	bzero(pwd, sizeof(*pwd));
 	refcount_init(&pwd->pwd_refcount, 1);
+	/*
+	 * Storage for the core dump directories, which only a process in
+	 * capability mode has.  pwd_fill() and pwd_drop_dirs() populate it but
+	 * cannot allocate it, as they run with the pwddesc lock held, whereas
+	 * pwd_alloc() callers all run before taking it.
+	 */
+	if (coredump) {
+		pwd->pwd_coredump = malloc(sizeof(*pwd->pwd_coredump),
+		    M_PWDDESC, M_WAITOK | M_ZERO);
+	}
 	return (pwd);
 }
 
@@ -4284,6 +4310,10 @@ pwd_drop(struct pwd *pwd)
 	if (pwd->pwd_adir != NULL)
 		vrele(pwd->pwd_adir);
 
+	if (pwd->pwd_coredump != NULL) {
+		pwd_core_release(pwd->pwd_coredump);
+		free(pwd->pwd_coredump, M_PWDDESC);
+	}
 	uma_zfree_smr(pwd_zone, pwd);
 }
 
@@ -4301,7 +4331,7 @@ pwd_chroot(struct thread *td, struct vnode *vp)
 
 	fdp = td->td_proc->p_fd;
 	pdp = td->td_proc->p_pd;
-	newpwd = pwd_alloc();
+	newpwd = pwd_alloc(IN_CAPABILITY_MODE(td));
 	FILEDESC_SLOCK(fdp);
 	PWDDESC_XLOCK(pdp);
 	oldpwd = PWDDESC_XLOCKED_LOAD_PWD(pdp);
@@ -4342,12 +4372,50 @@ pwd_chdir(struct thread *td, struct vnode *vp)
 
 	VNPASS(vp->v_usecount > 0, vp);
 
-	newpwd = pwd_alloc();
+	newpwd = pwd_alloc(IN_CAPABILITY_MODE(td));
 	pdp = td->td_proc->p_pd;
 	PWDDESC_XLOCK(pdp);
 	oldpwd = PWDDESC_XLOCKED_LOAD_PWD(pdp);
 	newpwd->pwd_cdir = vp;
 	pwd_fill(oldpwd, newpwd);
+	pwd_set(pdp, newpwd);
+	PWDDESC_XUNLOCK(pdp);
+	pwd_drop(oldpwd);
+}
+
+/*
+ * Release all directories associated with the process, leaving it without a
+ * current, root, jail or ABI directory.
+ *
+ * This is used by cap_enter(2): a process in capability mode has no way to
+ * name anything relative to these directories, so holding on to them only
+ * provides ambient authority for something to leak through.
+ *
+ * They are retained as the core dump directories, since both kern.corefile and
+ * kern.capmode_coredump may change at any point after this, so there is no way
+ * to tell here whether they will be needed.  Unlike the directories being
+ * dropped, they are reachable only from the core dumping path and never from a
+ * lookup the process can request.  The ABI root is not retained, so an
+ * absolute kern.corefile resolves against the real root rather than /compat.
+ *
+ * Note the deliberate lack of pwd_fill().
+ */
+void
+pwd_drop_dirs(struct thread *td)
+{
+	struct pwddesc *pdp;
+	struct pwd *newpwd, *oldpwd;
+
+	newpwd = pwd_alloc(true);
+	pdp = td->td_proc->p_pd;
+	PWDDESC_XLOCK(pdp);
+	oldpwd = PWDDESC_XLOCKED_LOAD_PWD(pdp);
+	if (oldpwd->pwd_coredump != NULL) {
+		/* Entering capability mode twice is caught by the caller. */
+		pwd_core_fill(newpwd->pwd_coredump, oldpwd->pwd_coredump);
+	} else {
+		pwd_core_fill(newpwd->pwd_coredump, &oldpwd->pwd_core);
+	}
 	pwd_set(pdp, newpwd);
 	PWDDESC_XUNLOCK(pdp);
 	pwd_drop(oldpwd);
@@ -4362,7 +4430,7 @@ pwd_altroot(struct thread *td, struct vnode *altroot_vp)
 	struct pwddesc *pdp;
 	struct pwd *newpwd, *oldpwd;
 
-	newpwd = pwd_alloc();
+	newpwd = pwd_alloc(IN_CAPABILITY_MODE(td));
 	pdp = td->td_proc->p_pd;
 	PWDDESC_XLOCK(pdp);
 	oldpwd = PWDDESC_XLOCKED_LOAD_PWD(pdp);
@@ -4376,10 +4444,15 @@ pwd_altroot(struct thread *td, struct vnode *altroot_vp)
 	} else {
 		/*
 		 * Non-native process to the native ABI.
+		 *
+		 * A process in capability mode has no root directory, in
+		 * which case it gets no ABI root either.
 		 */
 
-		vrefact(oldpwd->pwd_rdir);
-		newpwd->pwd_adir = oldpwd->pwd_rdir;
+		if (oldpwd->pwd_rdir != NULL) {
+			vrefact(oldpwd->pwd_rdir);
+			newpwd->pwd_adir = oldpwd->pwd_rdir;
+		}
 	}
 	pwd_fill(oldpwd, newpwd);
 	pwd_set(pdp, newpwd);
@@ -4400,7 +4473,7 @@ pwd_chroot_chdir(struct thread *td, struct vnode *vp)
 
 	fdp = td->td_proc->p_fd;
 	pdp = td->td_proc->p_pd;
-	newpwd = pwd_alloc();
+	newpwd = pwd_alloc(IN_CAPABILITY_MODE(td));
 	FILEDESC_SLOCK(fdp);
 	PWDDESC_XLOCK(pdp);
 	oldpwd = PWDDESC_XLOCKED_LOAD_PWD(pdp);
@@ -4445,7 +4518,7 @@ pwd_ensure_dirs(void)
 	}
 	PWDDESC_XUNLOCK(pdp);
 
-	newpwd = pwd_alloc();
+	newpwd = pwd_alloc(IN_CAPABILITY_MODE(curthread));
 	PWDDESC_XLOCK(pdp);
 	oldpwd = PWDDESC_XLOCKED_LOAD_PWD(pdp);
 	pwd_fill(oldpwd, newpwd);
@@ -4474,7 +4547,7 @@ pwd_set_rootvnode(void)
 
 	pdp = curproc->p_pd;
 
-	newpwd = pwd_alloc();
+	newpwd = pwd_alloc(IN_CAPABILITY_MODE(curthread));
 	PWDDESC_XLOCK(pdp);
 	oldpwd = PWDDESC_XLOCKED_LOAD_PWD(pdp);
 	vrefact(rootvnode);
@@ -4505,7 +4578,7 @@ mountcheckdirs(struct vnode *olddp, struct vnode *newdp)
 	if (vrefcnt(olddp) == 1)
 		return;
 	nrele = 0;
-	newpwd = pwd_alloc();
+	newpwd = pwd_alloc(true);
 	sx_slock(&allproc_lock);
 	FOREACH_PROC_IN_SYSTEM(p) {
 		PROC_LOCK(p);
@@ -4545,7 +4618,7 @@ mountcheckdirs(struct vnode *olddp, struct vnode *newdp)
 		PWDDESC_XUNLOCK(pdp);
 		pwd_drop(oldpwd);
 		pddrop(pdp);
-		newpwd = pwd_alloc();
+		newpwd = pwd_alloc(true);
 	}
 	sx_sunlock(&allproc_lock);
 	pwd_drop(newpwd);

@@ -81,6 +81,13 @@ struct nameidata {
 	 * directory and reassigns it as it descends.
 	 */
 	struct	pwd_core ni_dirs;
+	/*
+	 * The immutable source ni_dirs is derived from, in place of the
+	 * process's own directories.  Only ever set by the kernel, for a
+	 * lookup which is not the process's own action, and hence must be
+	 * paired with NOCAPCHECK.  See coredump.  NULL otherwise.
+	 */
+	struct	pwd_core *ni_core;
 	int	ni_dirfd;		/* starting directory for *at functions */
 	int	ni_lcf;			/* local call flags */
 	/*
@@ -237,6 +244,17 @@ int	cache_fplookup(struct nameidata *ndp, enum cache_fpl_status *status,
 	NDINIT_ALL(ndp, op, flags, segflg, namep, dirfd, NULL, rightsp)
 #define	NDINIT_ATVP(ndp, op, flags, segflg, namep, vp)			\
 	NDINIT_ALL(ndp, op, flags, segflg, namep, AT_FDCWD, vp, &cap_no_rights)
+/*
+ * Resolve against the supplied directories rather than the process's own.
+ * Must be paired with NOCAPCHECK: the lookup is not the process's own action,
+ * so capability mode does not apply to it.
+ */
+#define	NDINIT_CORE(ndp, op, flags, segflg, namep, core)			\
+do {										\
+	NDINIT_ALL(ndp, op, flags, segflg, namep, AT_FDCWD, NULL,		\
+	    &cap_no_rights);							\
+	(ndp)->ni_core = (core);						\
+} while (0)
 
 /*
  * Note the constant pattern may *hide* bugs.
@@ -278,6 +296,7 @@ do {										\
 	_ndp->ni_dirp = namep;							\
 	_ndp->ni_dirfd = dirfd;							\
 	_ndp->ni_startdir = startdir;						\
+	_ndp->ni_core = NULL;							\
 	_ndp->ni_resflags = 0;							\
 	filecaps_init(&_ndp->ni_filecaps);					\
 	_ndp->ni_rightsneeded = _rightsp;					\
@@ -320,16 +339,19 @@ int	vfs_relookup(struct vnode *dvp, struct vnode **vpp,
 	    struct componentname *cnp, bool refstart);
 
 /*
- * Derive the working lookup directories for one attempt from "core".  The
- * start directory is not touched: it is either supplied by the caller or
- * resolved separately from ni_dirfd.
+ * Derive the working lookup directories for one attempt.  The start directory
+ * is not touched: it is either supplied by the caller or resolved separately
+ * from ni_dirfd.
  *
- * The root is the one asymmetry: a lookup starts at the ABI root and only
- * falls back to the real root once namei() has restarted.
+ * "core" is the caller-supplied ni_core if there is one, else the process's
+ * own directories.  The root is the one asymmetry: an ordinary lookup starts
+ * at the ABI root and only falls back to the real root once namei() has
+ * restarted, whereas a caller-supplied core has no ABI root at all.
  */
 #define namei_setup_dirs(ndp, cnp, pwd, core) do {				\
 	ndp->ni_topdir = (core)->pwd_core_jdir;					\
-	if (__predict_true((cnp->cn_flags & ISRESTARTED) == 0))			\
+	if (__predict_true(ndp->ni_core == NULL &&				\
+	    (cnp->cn_flags & ISRESTARTED) == 0))				\
 		ndp->ni_rootdir = pwd->pwd_adir;				\
 	else									\
 		ndp->ni_rootdir = (core)->pwd_core_rdir;			\

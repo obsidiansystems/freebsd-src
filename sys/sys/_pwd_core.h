@@ -38,7 +38,8 @@ struct vnode;
  * Two things carry one of these:
  *
  * - struct pwd holds the process's own, which is what a lookup resolves
- *   against; see <sys/filedesc.h>.
+ *   against by default, plus optionally a second set retained for core
+ *   dumping; see <sys/filedesc.h>.
  *
  * - struct nameidata holds the working copy for a single lookup attempt,
  *   derived afresh each time namei() restarts; see <sys/namei.h>.

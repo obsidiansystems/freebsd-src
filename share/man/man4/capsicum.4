@@ -93,6 +93,16 @@ etc. relative to; in capability mode the
 .Xr openat 2
 family of system calls are constrained so that they can only operate on
 objects “under” the provided file descriptor.
+In particular,
+.Dv AT_FDCWD
+is rejected.
+Since no path can be resolved relative to the current or root directory,
+.Xr cap_enter 2
+discards both, and a process in capability mode has no current directory for
+.Xr procstat 1
+or the
+.Va kern.proc.cwd
+sysctl MIB to report.
 .It capabilities
 Limit operations that can be called on file descriptors.
 For example, a file descriptor returned by

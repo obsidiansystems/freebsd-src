@@ -66,6 +66,7 @@
 #include <sys/compressor.h>
 #include <sys/devctl.h>
 #include <sys/fcntl.h>
+#include <sys/filedesc.h>
 #include <sys/jail.h>
 #include <sys/limits.h>
 #include <sys/namei.h>
@@ -197,6 +198,23 @@ core_vn_extend(const struct coredump_writer *cdw, off_t newsz,
 }
 
 /*
+ * Core files are normally written relative to the process's own directories.
+ * A process in capability mode has none, so cap_enter(2) retains the ones it
+ * had for this purpose; see struct pwd.  Dumping core is not the process's own
+ * action, so capability mode does not apply to the lookup -- the callers pass
+ * VN_OPEN_NOCAPCHECK when kern.capmode_coredump permits it at all.
+ */
+static void
+corefile_ndinit(struct nameidata *ndp, char *name, struct pwd_core *core)
+{
+
+	if (core != NULL)
+		NDINIT_CORE(ndp, LOOKUP, NOFOLLOW, UIO_SYSSPACE, name, core);
+	else
+		NDINIT(ndp, LOOKUP, NOFOLLOW, UIO_SYSSPACE, name);
+}
+
+/*
  * If the core format has a %I in it, then we need to check
  * for existing corefiles before defining a name.
  * To do this we iterate over 0..ncores to find a
@@ -205,7 +223,7 @@ core_vn_extend(const struct coredump_writer *cdw, off_t newsz,
  */
 static int
 corefile_open_last(struct thread *td, char *name, int indexpos,
-    int indexlen, int ncores, struct vnode **vpp)
+    int indexlen, int ncores, struct pwd_core *core, struct vnode **vpp)
 {
 	struct vnode *oldvp, *nextvp, *vp;
 	struct vattr vattr;
@@ -227,7 +245,7 @@ corefile_open_last(struct thread *td, char *name, int indexpos,
 		    i);
 		name[indexpos + indexlen] = ch;
 
-		NDINIT(&nd, LOOKUP, NOFOLLOW, UIO_SYSSPACE, name);
+		corefile_ndinit(&nd, name, core);
 		error = vn_open_cred(&nd, &flags, cmode, oflags, td->td_ucred,
 		    NULL);
 		if (error != 0)
@@ -306,6 +324,8 @@ corefile_open(const char *comm, uid_t uid, pid_t pid, struct thread *td,
 {
 	struct sbuf sb;
 	struct nameidata nd;
+	struct pwd *pwd;
+	struct pwd_core *core;
 	const char *format;
 	char *hostname, *name;
 	int cmode, error, flags, i, indexpos, indexlen, oflags, ncores;
@@ -385,9 +405,12 @@ corefile_open(const char *comm, uid_t uid, pid_t pid, struct thread *td,
 	sbuf_finish(&sb);
 	sbuf_delete(&sb);
 
+	pwd = pwd_hold(td);
+	core = pwd->pwd_coredump;
+
 	if (indexpos != -1) {
 		error = corefile_open_last(td, name, indexpos, indexlen, ncores,
-		    vpp);
+		    core, vpp);
 		if (error != 0) {
 			log(LOG_ERR,
 			    "pid %d (%s), uid (%u):  Path `%s' failed "
@@ -402,7 +425,7 @@ corefile_open(const char *comm, uid_t uid, pid_t pid, struct thread *td,
 		if ((td->td_proc->p_flag & P_SUGID) != 0)
 			flags |= O_EXCL;
 
-		NDINIT(&nd, LOOKUP, NOFOLLOW, UIO_SYSSPACE, name);
+		corefile_ndinit(&nd, name, core);
 		error = vn_open_cred(&nd, &flags, cmode, oflags, td->td_ucred,
 		    NULL);
 		if (error == 0) {
@@ -410,6 +433,7 @@ corefile_open(const char *comm, uid_t uid, pid_t pid, struct thread *td,
 			NDFREE_PNBUF(&nd);
 		}
 	}
+	pwd_drop(pwd);
 
 	if (error != 0) {
 #ifdef AUDIT

@@ -91,17 +91,32 @@ struct fdescenttbl {
  * The ABI root directory is initialized as the root directory and changed
  * during process transiting to or from non-native ABI.
  *
+ * pwd_coredump is NULL for an ordinary process, in which case core files are
+ * written relative to the directories above as usual.  It is set only by
+ * cap_enter(2), which drops all of those: a process in capability mode has no
+ * current directory, so it would otherwise have nowhere to dump core.  It is
+ * deliberately not part of any namespace the process can name -- no lookup a
+ * process can request resolves against it, and it is not reported to
+ * userspace.  Note it has no ABI root, so an absolute kern.corefile is
+ * resolved against the real root rather than under /compat.
+ *
+ * It is owned by exactly one pwd and never aliased, so it needs no reference
+ * count of its own.  pwd_alloc() provides the storage, since pwd_fill() runs
+ * with the pwddesc lock held and so cannot allocate.
+ *
  * Check pwd_* routines for usage.
  */
 struct pwd {
 	u_int			pwd_refcount;
 	struct	pwd_core	pwd_core;
 	struct	vnode		*pwd_adir;	/* abi root directory */
+	struct	pwd_core	*pwd_coredump;	/* core dump directories */
 };
 
 /*
  * Accessors for the embedded lookup directories, so that the many existing
- * pwd->pwd_cdir style references need not spell out the substruct.
+ * pwd->pwd_cdir style references need not spell out the substruct.  Code
+ * reaching through pwd_coredump uses the pwd_core_* names directly.
  */
 #define	pwd_cdir	pwd_core.pwd_core_cdir
 #define	pwd_rdir	pwd_core.pwd_core_rdir
@@ -381,6 +396,7 @@ void	pwd_altroot(struct thread *td, struct vnode *altroot_vp);
 void	pwd_chdir(struct thread *td, struct vnode *vp);
 int	pwd_chroot(struct thread *td, struct vnode *vp);
 int	pwd_chroot_chdir(struct thread *td, struct vnode *vp);
+void	pwd_drop_dirs(struct thread *td);
 void	pwd_ensure_dirs(void);
 void	pwd_set_rootvnode(void);
 

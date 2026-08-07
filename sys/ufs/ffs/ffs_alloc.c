@@ -3565,6 +3565,13 @@ sysctl_ffs_fsck(SYSCTL_HANDLER_ARGS)
 		 */
 		pwd = pwd_hold(td);
 		dvp = pwd->pwd_cdir;
+		if (dvp == NULL) {
+			/* No current directory, e.g. in capability mode. */
+			vput(fdvp);
+			pwd_drop(pwd);
+			error = ENOENT;
+			break;
+		}
 		if ((error = vget(dvp, LK_EXCLUSIVE)) != 0) {
 			vput(fdvp);
 			pwd_drop(pwd);

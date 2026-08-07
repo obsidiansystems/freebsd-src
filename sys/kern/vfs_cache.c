@@ -3249,13 +3249,23 @@ vn_getcwd(char *buf, char **retbuf, size_t *buflen)
 
 	vfs_smr_enter();
 	pwd = pwd_get_smr();
+	if (__predict_false(pwd->pwd_cdir == NULL)) {
+		/* No current directory, e.g. in capability mode. */
+		vfs_smr_exit();
+		return (ENOENT);
+	}
 	error = vn_fullpath_any_smr(pwd->pwd_cdir, pwd->pwd_rdir, buf, retbuf,
 	    buflen, 0);
 	VFS_SMR_ASSERT_NOT_ENTERED();
 	if (error < 0) {
 		pwd = pwd_hold(curthread);
-		error = vn_fullpath_any(pwd->pwd_cdir, pwd->pwd_rdir, buf,
-		    retbuf, buflen);
+		if (__predict_false(pwd->pwd_cdir == NULL)) {
+			/* Raced against another thread entering capability mode. */
+			error = ENOENT;
+		} else {
+			error = vn_fullpath_any(pwd->pwd_cdir, pwd->pwd_rdir,
+			    buf, retbuf, buflen);
+		}
 		pwd_drop(pwd);
 	}
 
@@ -4629,6 +4639,10 @@ cache_can_fplookup(struct cache_fpl *fpl)
 		return (false);
 	}
 	if (IN_CAPABILITY_MODE(td) || CAP_TRACING(td)) {
+		cache_fpl_aborted_early(fpl);
+		return (false);
+	}
+	if (__predict_false(ndp->ni_core != NULL)) {
 		cache_fpl_aborted_early(fpl);
 		return (false);
 	}
@@ -6503,6 +6517,7 @@ cache_fplookup(struct nameidata *ndp, enum cache_fpl_status *status,
 	fpl.pwd = pwdp;
 	pwd = pwd_get_smr();
 	*(fpl.pwd) = pwd;
+	/* cache_can_fplookup() declined any caller-supplied ni_core. */
 	namei_setup_dirs(ndp, cnp, pwd, &pwd->pwd_core);
 
 	if (cnp->cn_pnbuf[0] == '/') {

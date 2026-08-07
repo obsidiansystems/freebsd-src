@@ -10,6 +10,20 @@ newline.  Entries should be separated by a newline.
 
 Changes to this file should not be MFCed.
 
+XXXXXXXXXXXX:
+	cap_enter(2) now discards the process's current and root directories,
+	neither of which can be named from capability mode.  This is a
+	hardening measure: the ambient authority they represent is now absent
+	rather than merely unreachable.  A process in capability mode
+	consequently has no current directory to report via procstat(1),
+	fstat(1), or the kern.proc.cwd and kern.proc.filedesc sysctls.  The
+	file systems involved still cannot be unmounted while it runs.
+
+	Core dumping, where kern.capmode_coredump permits it, is unaffected:
+	a relative kern.corefile is resolved against the directory the
+	process was in when it entered capability mode, and an absolute one
+	against the root it had then.
+
 72e57bc26417, 3dfbbe8586bb, d8e8f9251975:
 	These patches provide improvements for the pNFS server
 	configuration.  New optional features include:

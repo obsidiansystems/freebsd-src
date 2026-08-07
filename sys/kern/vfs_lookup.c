@@ -321,6 +321,14 @@ namei_handle_root(struct nameidata *ndp, struct vnode **dpp)
 		if ((ndp->ni_lcf & NI_LCF_STRICTREL) != 0)
 			return (ENOTCAPABLE);
 	}
+	/*
+	 * A process which entered capability mode has no root directory, so
+	 * there is nothing for an absolute path to be resolved against.  This
+	 * is only reachable via NOCAPCHECK lookups, which bypass the
+	 * NI_LCF_STRICTREL check above.
+	 */
+	if (__predict_false(ndp->ni_rootdir == NULL))
+		return (ENOENT);
 	while (*(cnp->cn_nameptr) == '/') {
 		cnp->cn_nameptr++;
 		ndp->ni_pathlen--;
@@ -336,6 +344,7 @@ namei_setup(struct nameidata *ndp, struct vnode **dpp, struct pwd **pwdp)
 	struct componentname *cnp;
 	struct thread *td;
 	struct pwd *pwd;
+	const struct pwd_core *core;
 	int error;
 	bool startdir_used;
 
@@ -381,10 +390,16 @@ namei_setup(struct nameidata *ndp, struct vnode **dpp, struct pwd **pwdp)
 	 */
 	pwd = pwd_hold(td);
 	/*
+	 * The directories to resolve against.  Recomputed on every attempt,
+	 * alongside the pwd reference above, so that a restart picks up any
+	 * change rather than carrying stale state across.
+	 */
+	core = ndp->ni_core != NULL ? ndp->ni_core : &pwd->pwd_core;
+	/*
 	 * The reference on ni_rootdir is acquired in the block below to avoid
 	 * back-to-back atomics for absolute lookups.
 	 */
-	namei_setup_dirs(ndp, cnp, pwd, &pwd->pwd_core);
+	namei_setup_dirs(ndp, cnp, pwd, core);
 
 	if (cnp->cn_pnbuf[0] == '/') {
 		ndp->ni_resflags |= NIRES_ABS;
@@ -394,8 +409,16 @@ namei_setup(struct nameidata *ndp, struct vnode **dpp, struct pwd **pwdp)
 			*dpp = ndp->ni_startdir;
 			startdir_used = true;
 		} else if (ndp->ni_dirfd == AT_FDCWD) {
-			*dpp = pwd->pwd_cdir;
-			vrefact(*dpp);
+			/*
+			 * As above: a capability mode process has no current
+			 * directory, and only a NOCAPCHECK lookup gets here.
+			 */
+			if (__predict_false(core->pwd_core_cdir == NULL)) {
+				error = ENOENT;
+			} else {
+				*dpp = core->pwd_core_cdir;
+				vrefact(*dpp);
+			}
 		} else {
 			if (cnp->cn_flags & AUDITVNODE1)
 				AUDIT_ARG_ATFD1(ndp->ni_dirfd);

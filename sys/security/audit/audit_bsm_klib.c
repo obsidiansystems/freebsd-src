@@ -430,6 +430,14 @@ audit_canon_path_vp(struct thread *td, struct vnode *rdir, struct vnode *cdir,
 
 	copy = path;
 	if (*path == '/') {
+		/*
+		 * A process in capability mode has no root directory to
+		 * resolve an absolute path against.
+		 */
+		if (rdir == NULL) {
+			cpath[0] = '\0';
+			return;
+		}
 		vp = rdir;
 	} else {
 		if (cdir == NULL) {

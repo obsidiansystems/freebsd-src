@@ -56,6 +56,26 @@ or
 .Xr pdfork 2
 will be placed in capability mode from inception.
 .Pp
+.Fn cap_enter
+also discards the process's current and root directories.
+Capability mode provides no way to name a file relative to either of them, so
+retaining them would only grant the sandbox authority it cannot use.
+A process in capability mode therefore has no current directory: none is
+reported by
+.Xr procstat 1 ,
+.Xr fstat 1 ,
+or the
+.Va kern.proc.cwd
+and
+.Va kern.proc.filedesc
+sysctl MIBs, and the process cannot acquire one, as
+.Xr chdir 2
+and
+.Xr fchdir 2
+are not permitted in capability mode.
+The file systems those directories resided on nevertheless remain busy for
+the lifetime of the process and cannot be unmounted.
+.Pp
 When combined with
 .Xr cap_rights_limit 2 ,
 .Xr cap_ioctls_limit 2 ,
@@ -95,6 +115,16 @@ and
 operations of the
 .Xr procctl 2
 function for similar per-process functionality.
+.Pp
+If the
+.Dv kern.capmode_coredump
+sysctl MIB is set to a non-zero value, processes in capability mode may dump
+core.
+A relative
+.Dv kern.corefile
+is resolved against the directory the process was in when it called
+.Fn cap_enter ,
+and an absolute one against the root directory it had at that time.
 .Sh RETURN VALUES
 .Rv -std cap_enter cap_getmode
 .Pp

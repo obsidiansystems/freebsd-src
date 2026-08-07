@@ -114,6 +114,25 @@ sys_cap_enter(struct thread *td, struct cap_enter_args *uap)
 	proc_set_cred(p, newcred);
 	PROC_UNLOCK(p);
 	crfree(oldcred);
+
+	/*
+	 * Clear the current, root, jail and ABI directories.  They are
+	 * unreachable in capability mode, so keeping them around only serves
+	 * to provide ambient authority for something to leak through.  Note
+	 * all but the ABI root are retained for core dumping, so this does
+	 * not release the mounts they live on.
+	 *
+	 * This must follow the credential change above, so that another thread
+	 * sharing this pwddesc never observes the retained core dump
+	 * directories before it observes capability mode.  pwd_alloc() relies
+	 * on that ordering to decide whether to provide storage for them.
+	 *
+	 * p_pd may be shared with another process (rfork(2) without RFFDG, or
+	 * Linux clone(2) with CLONE_FS), which must not be affected, so
+	 * unshare first.  Both calls may sleep.
+	 */
+	pdunshare(td);
+	pwd_drop_dirs(td);
 	return (0);
 }
 
