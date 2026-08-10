@@ -293,7 +293,7 @@ static int	uipc_ctloutput(struct socket *, struct sockopt *);
 static int	unp_connectat(int, struct socket *, const char *, int,
 		    struct thread *, struct socket **);
 static int	unp_connect_peer(struct socket *, struct unpcb *,
-		    struct sockaddr **, struct thread *, bool);
+		    struct thread *, bool);
 static int	unp_resolve_peer(struct thread *, int, const char *,
 		    struct socket **);
 static int	unp_vnode_peer(struct vnode *, struct thread *,
@@ -2959,9 +2959,7 @@ unp_connectat(int fd, struct socket *so, const char *path, int len,
 	struct socket *so2;
 	struct unpcb *unp;
 	char buf[SOCK_MAXADDRLEN];
-	struct sockaddr *sa;
 	int error;
-	bool connreq;
 
 	CURVNET_ASSERT_SET();
 
@@ -3005,16 +3003,10 @@ unp_connectat(int fd, struct socket *so, const char *path, int len,
 	unp->unp_flags |= UNP_CONNECTING;
 	UNP_PCB_UNLOCK(unp);
 
-	connreq = (so->so_proto->pr_flags & PR_CONNREQUIRED) != 0;
-	if (connreq)
-		sa = malloc(sizeof(struct sockaddr_un), M_SONAME, M_WAITOK);
-	else
-		sa = NULL;
-
 	error = unp_resolve_peer(td, fd, buf, &so2);
 	if (error != 0)
 		goto out;
-	error = unp_connect_peer(so, sotounpcb(so2), &sa, td,
+	error = unp_connect_peer(so, sotounpcb(so2), td,
 	    referenced_peerp != NULL);
 	/* Transfer the reference; the caller releases it after unlocking. */
 	if (error == 0 && referenced_peerp != NULL)
@@ -3022,7 +3014,6 @@ unp_connectat(int fd, struct socket *so, const char *path, int len,
 	else
 		sorele(so2);
 out:
-	free(sa, M_SONAME);
 	if (__predict_false(error)) {
 		UNP_PCB_LOCK(unp);
 		KASSERT((unp->unp_flags & UNP_CONNECTING) != 0,
@@ -3207,21 +3198,21 @@ unp_vnode_peer(struct vnode *vp, struct thread *td, struct socket **so2p)
  * caller, which must guarantee its stability by holding a reference on the
  * peer socket.  Must be called with no locks held.
  *
- * For connection-oriented sockets '*sap' points to a buffer to hold the
- * listener's address; it is consumed (set to NULL) if used.  On success
- * UNP_CONNECTING is cleared; on error the caller must clear it.
+ * On success UNP_CONNECTING is cleared; on error the caller must clear it.
  */
 static int
-unp_connect_peer(struct socket *so, struct unpcb *unp2, struct sockaddr **sap,
-    struct thread *td, bool return_locked)
+unp_connect_peer(struct socket *so, struct unpcb *unp2, struct thread *td,
+    bool return_locked)
 {
 	struct socket *so2;
+	struct sockaddr *sa;
 	struct unpcb *unp, *unp3, *lunp;
 	int error;
 	bool connreq;
 
 	unp = sotounpcb(so);
 	KASSERT(unp != NULL, ("%s: unp == NULL", __func__));
+	sa = NULL;
 	connreq = (so->so_proto->pr_flags & PR_CONNREQUIRED) != 0;
 	lunp = NULL;
 
@@ -3242,6 +3233,12 @@ unp_connect_peer(struct socket *so, struct unpcb *unp2, struct sockaddr **sap,
 		unp3 = sotounpcb(so2);
 
 		/*
+		 * The listener's address is copied to the new socket under the
+		 * PCB locks below, so its storage has to be in hand first.
+		 */
+		sa = malloc(sizeof(struct sockaddr_un), M_SONAME, M_WAITOK);
+
+		/*
 		 * Hold the listener's lock until the new socket is on its
 		 * queue.  uipc_close() marks the listener closed under that
 		 * lock before soclose() drains the queue, so either we see
@@ -3250,6 +3247,7 @@ unp_connect_peer(struct socket *so, struct unpcb *unp2, struct sockaddr **sap,
 		unp_pcb_lock_pair(unp, unp2);
 		if (__predict_false((unp2->unp_flags & UNP_CLOSED) != 0)) {
 			unp_pcb_unlock_pair(unp, unp2);
+			free(sa, M_SONAME);
 			so2->so_listen = NULL;
 			refcount_init(&so2->so_count, 1);
 			sorele(so2);
@@ -3262,9 +3260,9 @@ unp_connect_peer(struct socket *so, struct unpcb *unp2, struct sockaddr **sap,
 		 */
 		UNP_PCB_LOCK(unp3);
 		if (unp2->unp_addr != NULL) {
-			bcopy(unp2->unp_addr, *sap, unp2->unp_addr->sun_len);
-			unp3->unp_addr = (struct sockaddr_un *)*sap;
-			*sap = NULL;
+			bcopy(unp2->unp_addr, sa, unp2->unp_addr->sun_len);
+			unp3->unp_addr = (struct sockaddr_un *)sa;
+			sa = NULL;
 		}
 
 		unp_copy_peercred(td, unp3, unp, unp2);
@@ -3291,6 +3289,7 @@ unp_connect_peer(struct socket *so, struct unpcb *unp2, struct sockaddr **sap,
 	unp->unp_flags &= ~UNP_CONNECTING;
 	if (!return_locked)
 		unp_pcb_unlock_pair(unp, unp2);
+	free(sa, M_SONAME);
 	return (0);
 }
 
