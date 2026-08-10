@@ -294,7 +294,7 @@ static int	unp_connectat(int, struct socket *, const char *, int,
 		    struct thread *, struct socket **);
 static int	unp_connect_peer(struct socket *, struct unpcb *,
 		    struct sockaddr **, struct thread *, bool);
-static int	unp_connectat_peer(struct thread *, int, const char *,
+static int	unp_resolve_peer(struct thread *, int, const char *,
 		    struct socket **);
 static int	unp_vnode_peer(struct vnode *, struct thread *,
 		    struct socket **);
@@ -3006,7 +3006,7 @@ unp_connectat(int fd, struct socket *so, const char *path, int len,
 	else
 		sa = NULL;
 
-	error = unp_connectat_peer(td, fd, buf, &so2);
+	error = unp_resolve_peer(td, fd, buf, &so2);
 	if (error != 0)
 		goto out;
 	error = unp_connect_peer(so, sotounpcb(so2), &sa, td,
@@ -3090,9 +3090,9 @@ unp_dupfd_peer(struct vnode *vp, struct thread *td, struct socket **so2p)
 }
 
 /*
- * Resolve a connectat(2) target -- descriptor 'fd' together with the pathname
- * in 'buf' (null when len == 0) -- to a referenced peer unix socket in
- * '*so2p', covering all four ways a peer can be named:
+ * Resolve a peer named by descriptor 'fd' together with the pathname in 'buf'
+ * -- empty to name the peer by the descriptor alone -- to a referenced peer
+ * unix socket in '*so2p', covering all four ways a peer can be named:
  *
  *	empty path + socket fd		the descriptor is the peer socket
  *	empty path + O_PATH vnode	EMPTYPATH resolves the socket's vnode
@@ -3102,7 +3102,7 @@ unp_dupfd_peer(struct vnode *vp, struct thread *td, struct socket **so2p)
  * The caller must release the returned socket with sorele().
  */
 static int
-unp_connectat_peer(struct thread *td, int fd, const char *buf,
+unp_resolve_peer(struct thread *td, int fd, const char *buf,
     struct socket **so2p)
 {
 	struct nameidata nd;
