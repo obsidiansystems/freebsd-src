@@ -2960,6 +2960,7 @@ unp_connectat(int fd, struct socket *so, const char *path, int len,
 
 	bcopy(path, buf, len);
 	buf[len] = 0;
+	so2 = NULL;
 
 	error = 0;
 	unp = sotounpcb(so);
@@ -2999,23 +3000,31 @@ unp_connectat(int fd, struct socket *so, const char *path, int len,
 	UNP_PCB_UNLOCK(unp);
 
 	error = unp_resolve_peer(td, fd, buf, &so2);
+	if (error == 0)
+		error = unp_connect_peer(so, sotounpcb(so2), td,
+		    referenced_peerp != NULL);
+
+	/*
+	 * We are the ones wanting the lock, so we take it whenever a failure
+	 * left us without one.  A success hands ours back already held.
+	 */
 	if (error != 0)
-		goto out;
-	error = unp_connect_peer(so, sotounpcb(so2), td,
-	    referenced_peerp != NULL);
-	/* Transfer the reference; the caller releases it after unlocking. */
-	if (error == 0 && referenced_peerp != NULL)
-		*referenced_peerp = so2;
-	else
-		sorele(so2);
-out:
-	if (__predict_false(error)) {
 		UNP_PCB_LOCK(unp);
-		KASSERT((unp->unp_flags & UNP_CONNECTING) != 0,
-		    ("%s: unp %p has UNP_CONNECTING clear", __func__, unp));
-		unp->unp_flags &= ~UNP_CONNECTING;
-		UNP_PCB_UNLOCK(unp);
+	UNP_PCB_LOCK_ASSERT(unp);
+	KASSERT((unp->unp_flags & UNP_CONNECTING) != 0,
+	    ("%s: unp %p has UNP_CONNECTING clear", __func__, unp));
+	unp->unp_flags &= ~UNP_CONNECTING;
+
+	if (error == 0 && referenced_peerp != NULL) {
+		/* Both PCBs stay locked, and the reference goes with them. */
+		*referenced_peerp = so2;
+		return (0);
 	}
+	UNP_PCB_UNLOCK(unp);
+
+	/* Only once unlocked: the last release can re-enter uipc_close(). */
+	if (so2 != NULL)
+		sorele(so2);
 	return (error);
 }
 
@@ -3124,7 +3133,7 @@ unp_resolve_peer(struct thread *td, int fd, const char *buf,
 	/*
 	 * Dispatch on the resolved vnode, then drop it: for the socket cases the
 	 * returned reference keeps the peer stable, so the caller holds no vnode
-	 * lock across unp_connect_peer() (which matters for the return_locked
+	 * lock across unp_connect_peer() (which matters for the return_peer_locked
 	 * datagram fast path).
 	 *
 	 * A synthetic descriptor node -- as fdescfs fabricates for a /dev/fd/N
@@ -3194,11 +3203,14 @@ unp_vnode_peer(struct vnode *vp, struct thread *td, struct socket **so2p)
  * peer socket, or the vnode lock plus unp_vp_mtxpool lock for a peer found
  * via VOP_UNP_CONNECT()).
  *
- * On success UNP_CONNECTING is cleared; on error the caller must clear it.
+ * On success returns with 'so's PCB lock held, so that the caller may clear
+ * UNP_CONNECTING without reacquiring it; the peer's is held as well if
+ * 'return_peer_locked', and dropped otherwise.  On failure no lock is held,
+ * none having been taken.
  */
 static int
 unp_connect_peer(struct socket *so, struct unpcb *unp2, struct thread *td,
-    bool return_locked)
+    bool return_peer_locked)
 {
 	struct socket *so2;
 	struct sockaddr *sa;
@@ -3262,11 +3274,8 @@ unp_connect_peer(struct socket *so, struct unpcb *unp2, struct thread *td,
 	unp_connect2(so, so2, connreq);
 	if (connreq)
 		(void)solisten_enqueue(so2, SS_ISCONNECTED);
-	KASSERT((unp->unp_flags & UNP_CONNECTING) != 0,
-	    ("%s: unp %p has UNP_CONNECTING clear", __func__, unp));
-	unp->unp_flags &= ~UNP_CONNECTING;
-	if (!return_locked)
-		unp_pcb_unlock_pair(unp, unp2);
+	if (!return_peer_locked && unp != unp2)
+		UNP_PCB_UNLOCK(unp2);
 	free(sa, M_SONAME);
 	return (0);
 }
