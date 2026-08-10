@@ -348,6 +348,77 @@ ATF_TC_BODY(dgram, tc)
 }
 
 /*
+ * A connected datagram socket may not name a destination: sendto(2) on one
+ * fails with EISCONN.  uipc_sosend_dgram() checks for this itself, where it
+ * used to inherit the error from the temporary connection it made.
+ */
+ATF_TC_WITHOUT_HEAD(dgram_sendto_connected);
+ATF_TC_BODY(dgram_sendto_connected, tc)
+{
+	struct sockaddr_un sun = { .sun_family = AF_UNIX };
+	int p, s;
+
+	ATF_REQUIRE((p = socket(PF_UNIX, SOCK_DGRAM, 0)) >= 0);
+	strlcpy(sun.sun_path, "eisconn.sock", sizeof(sun.sun_path));
+	sun.sun_len = SUN_LEN(&sun);
+	ATF_REQUIRE_MSG(bind(p, (struct sockaddr *)&sun, sun.sun_len) == 0,
+	    "bind: %s", strerror(errno));
+
+	/* Name the peer by descriptor, so 's' is connected but unbound. */
+	ATF_REQUIRE((s = socket(PF_UNIX, SOCK_DGRAM, 0)) >= 0);
+	ATF_REQUIRE_EQ(0, fdconnect(p, s));
+	ATF_REQUIRE_ERRNO(EISCONN, sendto(s, "x", 1, 0,
+	    (struct sockaddr *)&sun, sun.sun_len) == -1);
+
+	ATF_REQUIRE_EQ(0, close(s));
+	ATF_REQUIRE_EQ(0, close(p));
+}
+
+/*
+ * An empty path names the peer by descriptor, but sendto(2) has no descriptor
+ * to name one with: it always resolves from AT_FDCWD, which is not a peer.
+ * uipc_sosend_dgram() rejects that with EINVAL, where it used to inherit the
+ * error from the temporary connection it made.
+ */
+ATF_TC_WITHOUT_HEAD(dgram_sendto_empty_path);
+ATF_TC_BODY(dgram_sendto_empty_path, tc)
+{
+	int s;
+
+	ATF_REQUIRE((s = socket(PF_UNIX, SOCK_DGRAM, 0)) >= 0);
+	ATF_REQUIRE_ERRNO(EINVAL, sendto(s, "x", 1, 0,
+	    (const struct sockaddr *)&empty_sun, empty_sun.sun_len) == -1);
+
+	ATF_REQUIRE_EQ(0, close(s));
+}
+
+/*
+ * A datagram socket may name itself, in which case the send resolves to its
+ * own PCB and unp_pcb_lock_pair() takes a single lock.  Compare
+ * unix_dgram:one2many, which reaches the same edge case via connect(2).
+ */
+ATF_TC_WITHOUT_HEAD(dgram_sendto_self);
+ATF_TC_BODY(dgram_sendto_self, tc)
+{
+	struct sockaddr_un sun = { .sun_family = AF_UNIX };
+	char buf[6];
+	int s;
+
+	ATF_REQUIRE((s = socket(PF_UNIX, SOCK_DGRAM, 0)) >= 0);
+	strlcpy(sun.sun_path, "self.sock", sizeof(sun.sun_path));
+	sun.sun_len = SUN_LEN(&sun);
+	ATF_REQUIRE_MSG(bind(s, (struct sockaddr *)&sun, sun.sun_len) == 0,
+	    "bind: %s", strerror(errno));
+
+	ATF_REQUIRE_EQ(5, sendto(s, "hello", 5, 0,
+	    (struct sockaddr *)&sun, sun.sun_len));
+	ATF_REQUIRE_EQ(5, recv(s, buf, sizeof(buf), 0));
+	ATF_REQUIRE_EQ(0, memcmp(buf, "hello", 5));
+
+	ATF_REQUIRE_EQ(0, close(s));
+}
+
+/*
  * Matrix cell: empty path + a descriptor that names a bound socket's *vnode*
  * (an O_PATH handle), not the socket object.  getsock() sees a non-socket and
  * the connect falls back to an EMPTYPATH lookup that resolves the vnode.
@@ -749,6 +820,9 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, bind_after_listen);
 	ATF_TP_ADD_TC(tp, listen_after_disconnect);
 	ATF_TP_ADD_TC(tp, dgram);
+	ATF_TP_ADD_TC(tp, dgram_sendto_connected);
+	ATF_TP_ADD_TC(tp, dgram_sendto_empty_path);
+	ATF_TP_ADD_TC(tp, dgram_sendto_self);
 	ATF_TP_ADD_TC(tp, empty_path_vnode);
 	ATF_TP_ADD_TC(tp, path);
 	ATF_TP_ADD_TC(tp, devfd);

@@ -291,9 +291,9 @@ static struct mtx	unp_defers_lock;
 static int	uipc_connect2(struct socket *, struct socket *);
 static int	uipc_ctloutput(struct socket *, struct sockopt *);
 static int	unp_connectat(int, struct socket *, const char *, int,
-		    struct thread *, struct socket **);
+		    struct thread *);
 static int	unp_connect_peer(struct socket *, struct unpcb *,
-		    struct thread *, bool);
+		    struct thread *);
 static int	unp_resolve_peer(struct thread *, int, const char *,
 		    struct socket **);
 static int	unp_vnode_peer(struct vnode *, struct thread *,
@@ -742,7 +742,7 @@ uipc_connect(struct socket *so, struct sockaddr *nam, struct thread *td)
 	 */
 	if (len == 0)
 		return (EINVAL);
-	return (unp_connectat(AT_FDCWD, so, path, len, td, NULL));
+	return (unp_connectat(AT_FDCWD, so, path, len, td));
 }
 
 static int
@@ -757,7 +757,7 @@ uipc_connectat(int fd, struct socket *so, struct sockaddr *nam,
 	error = unp_sun_path(nam, &path, &len);
 	if (error != 0)
 		return (error);
-	return (unp_connectat(fd, so, path, len, td, NULL));
+	return (unp_connectat(fd, so, path, len, td));
 }
 
 static void
@@ -2104,16 +2104,34 @@ uipc_sosend_dgram(struct socket *so, struct sockaddr *addr, struct uio *uio,
 	SOCK_SENDBUF_UNLOCK(so);
 
 	if (addr != NULL) {
+		char buf[SOCK_MAXADDRLEN];
 		const char *path;
 		int len;
 
 		if ((error = unp_sun_path(addr, &path, &len)))
 			goto out3;
-		if ((error = unp_connectat(AT_FDCWD, so, path, len, td, &peer)))
+		if (len == 0) {
+			error = EINVAL;
 			goto out3;
-		UNP_PCB_LOCK_ASSERT(unp);
-		unp2 = unp->unp_conn;
-		UNP_PCB_LOCK_ASSERT(unp2);
+		}
+		bcopy(path, buf, len);
+		buf[len] = 0;
+		if ((error = unp_resolve_peer(td, AT_FDCWD, buf, &peer)))
+			goto out3;
+		if (so->so_type != peer->so_type) {
+			sorele(peer);
+			error = EPROTOTYPE;
+			goto out3;
+		}
+		unp2 = sotounpcb(peer);
+		unp_pcb_lock_pair(unp, unp2);
+		/* A connected socket must not name a destination. */
+		if (unp->unp_conn != NULL) {
+			unp_pcb_unlock_pair(unp, unp2);
+			sorele(peer);
+			error = EISCONN;
+			goto out3;
+		}
 	} else {
 		UNP_PCB_LOCK(unp);
 		unp2 = unp_pcb_lock_peer(unp);
@@ -2178,13 +2196,12 @@ uipc_sosend_dgram(struct socket *so, struct sockaddr *addr, struct uio *uio,
 	 * Destination socket buffer selection.
 	 *
 	 * Unconnected sends, when !(so->so_state & SS_ISCONNECTED) and the
-	 * destination address is supplied, create a temporary connection for
-	 * the run time of the function (see call to unp_connectat() above and
-	 * to unp_disconnect() below).  We distinguish them by condition of
-	 * (addr != NULL).  We intentionally avoid adding 'bool connected' for
-	 * that condition, since, again, through the run time of this code we
-	 * are always connected.  For such "unconnected" sends, the destination
-	 * buffer would be the receive buffer of destination socket so2.
+	 * destination address is supplied, resolve that address to the peer and
+	 * hold its PCB locked for the run time of the function (see the call to
+	 * unp_resolve_peer() above).  No connection is established: the
+	 * destination buffer below is the peer's receive buffer, so none of what
+	 * a connection sets up would be used.  We distinguish such sends by the
+	 * condition of (addr != NULL).
 	 *
 	 * For connected sends, data lands on the send buffer of the sender's
 	 * socket "so".  Then, if we just added the very first datagram
@@ -2225,11 +2242,9 @@ uipc_sosend_dgram(struct socket *so, struct sockaddr *addr, struct uio *uio,
 	}
 
 out4:
-	if (addr != NULL) {
-		unp_disconnect(unp, unp2);
+	unp_pcb_unlock_pair(unp, unp2);
+	if (addr != NULL)
 		sorele(peer);
-	} else
-		unp_pcb_unlock_pair(unp, unp2);
 
 	td->td_ru.ru_msgsnd++;
 
@@ -2933,23 +2948,12 @@ uipc_ctloutput(struct socket *so, struct sockopt *sopt)
  * (an empty path names the peer directly by descriptor), resolved relative to
  * descriptor 'fd' (AT_FDCWD for connect(2)).
  *
- * 'referenced_peerp' selects how the peer is returned.  If NULL, on exit the
- * peer's PCB is unlocked and the peer is unreferenced, symmetrically releasing
- * the resources acquired within the function.  If non-NULL, the peer's PCB is
- * returned locked and '*referenced_peerp' receives the referenced peer socket;
- * the caller is then responsible for first unlocking the peer's PCB and
- * afterwards releasing the socket.
- *
- * The reference is handed back rather than released in the return-unlocked
- * case, because releasing the last one under the PCB lock could cause
- * uipc_close() to try to re-acquire that lock.
- *
- * Note: the referenced_peerp mechanism is here only for the datagram fast-send
- * path, which enqueues under the peer's PCB lock.
+ * On exit the peer's PCB is unlocked and the peer unreferenced, symmetrically
+ * releasing the resources acquired within the function.
  */
 static int
 unp_connectat(int fd, struct socket *so, const char *path, int len,
-    struct thread *td, struct socket **referenced_peerp)
+    struct thread *td)
 {
 	struct socket *so2;
 	struct unpcb *unp;
@@ -3001,8 +3005,7 @@ unp_connectat(int fd, struct socket *so, const char *path, int len,
 
 	error = unp_resolve_peer(td, fd, buf, &so2);
 	if (error == 0)
-		error = unp_connect_peer(so, sotounpcb(so2), td,
-		    referenced_peerp != NULL);
+		error = unp_connect_peer(so, sotounpcb(so2), td);
 
 	/*
 	 * We are the ones wanting the lock, so we take it whenever a failure
@@ -3014,12 +3017,6 @@ unp_connectat(int fd, struct socket *so, const char *path, int len,
 	KASSERT((unp->unp_flags & UNP_CONNECTING) != 0,
 	    ("%s: unp %p has UNP_CONNECTING clear", __func__, unp));
 	unp->unp_flags &= ~UNP_CONNECTING;
-
-	if (error == 0 && referenced_peerp != NULL) {
-		/* Both PCBs stay locked, and the reference goes with them. */
-		*referenced_peerp = so2;
-		return (0);
-	}
 	UNP_PCB_UNLOCK(unp);
 
 	/* Only once unlocked: the last release can re-enter uipc_close(). */
@@ -3133,8 +3130,7 @@ unp_resolve_peer(struct thread *td, int fd, const char *buf,
 	/*
 	 * Dispatch on the resolved vnode, then drop it: for the socket cases the
 	 * returned reference keeps the peer stable, so the caller holds no vnode
-	 * lock across unp_connect_peer() (which matters for the return_peer_locked
-	 * datagram fast path).
+	 * lock while connecting or enqueuing to it.
 	 *
 	 * A synthetic descriptor node -- as fdescfs fabricates for a /dev/fd/N
 	 * path -- carries no type of its own (VNON); opening it yields the
@@ -3203,14 +3199,11 @@ unp_vnode_peer(struct vnode *vp, struct thread *td, struct socket **so2p)
  * peer socket, or the vnode lock plus unp_vp_mtxpool lock for a peer found
  * via VOP_UNP_CONNECT()).
  *
- * On success returns with 'so's PCB lock held, so that the caller may clear
- * UNP_CONNECTING without reacquiring it; the peer's is held as well if
- * 'return_peer_locked', and dropped otherwise.  On failure no lock is held,
- * none having been taken.
+ * On success returns with 'so's PCB lock held and no other, the peer's having
+ * been dropped; on failure no lock is held, none having been taken.
  */
 static int
-unp_connect_peer(struct socket *so, struct unpcb *unp2, struct thread *td,
-    bool return_peer_locked)
+unp_connect_peer(struct socket *so, struct unpcb *unp2, struct thread *td)
 {
 	struct socket *so2;
 	struct sockaddr *sa;
@@ -3274,7 +3267,7 @@ unp_connect_peer(struct socket *so, struct unpcb *unp2, struct thread *td,
 	unp_connect2(so, so2, connreq);
 	if (connreq)
 		(void)solisten_enqueue(so2, SS_ISCONNECTED);
-	if (!return_peer_locked && unp != unp2)
+	if (unp != unp2)
 		UNP_PCB_UNLOCK(unp2);
 	free(sa, M_SONAME);
 	return (0);
