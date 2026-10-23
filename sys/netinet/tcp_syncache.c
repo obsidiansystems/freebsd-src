@@ -772,6 +772,7 @@ syncache_socket(struct syncache *sc, struct socket *lso, struct mbuf *m)
 	struct tcpcb *tp;
 	int error;
 	char *s;
+	bool complete;
 
 	NET_EPOCH_ASSERT();
 
@@ -1016,7 +1017,14 @@ syncache_socket(struct syncache *sc, struct socket *lso, struct mbuf *m)
 	TCPSTAT_INC(tcps_accepts);
 	TCP_PROBE6(state__change, NULL, tp, NULL, tp, NULL, TCPS_LISTEN);
 
-	if (!solisten_enqueue(so, SS_ISCONNECTED))
+	/*
+	 * The listener cannot have been closed: we hold its inpcb lock, and
+	 * tcp_usr_close() takes it out of LISTEN before soclose() drains the
+	 * queues.
+	 */
+	error = solisten_enqueue(so, SS_ISCONNECTED, &complete);
+	KASSERT(error == 0, ("%s: listener %p closed", __func__, lso));
+	if (!complete)
 		tp->t_flags |= TF_SONOTCONN;
 	/* Can we inherit anything from the listener? */
 	if (tp->t_fb->tfb_inherit != NULL) {
