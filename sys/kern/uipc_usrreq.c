@@ -3295,13 +3295,23 @@ unp_connect_peer(struct socket *so, struct unpcb *unp2, struct sockaddr **sap,
 	    sotounpcb(so2) == unp2,
 	    ("%s: unp2 %p so2 %p", __func__, unp2, so2));
 	unp_connect2(so, so2, connreq);
+	error = 0;
 	if (connreq)
-		(void)solisten_enqueue(so2, SS_ISCONNECTED);
+		error = solisten_enqueue(so2, SS_ISCONNECTED, NULL);
 	KASSERT((unp->unp_flags & UNP_CONNECTING) != 0,
 	    ("%s: unp %p has UNP_CONNECTING clear", __func__, unp));
 	unp->unp_flags &= ~UNP_CONNECTING;
 	if (!return_locked)
 		unp_pcb_unlock_pair(unp, unp2);
+
+	/*
+	 * If the listener was closed under us, our new socket gets what
+	 * soclose() gives the ones it found on the queue.
+	 */
+	if (__predict_false(error != 0)) {
+		MPASS(!return_locked);
+		soabort(so2);
+	}
 	return (0);
 }
 
