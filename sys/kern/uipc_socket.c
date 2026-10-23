@@ -1287,19 +1287,31 @@ sonewconn(struct socket *head, int connstatus)
 		return (NULL);
 	}
 
-	(void)solisten_enqueue(so, connstatus);
+	if (solisten_enqueue(so, connstatus, NULL) != 0) {
+		/* The listener has been closed since we cloned it. */
+		soabort(so);
+		return (NULL);
+	}
 
 	return (so);
 }
 
 /*
- * Enqueue socket cloned by solisten_clone() to the listen queue of the
+ * Enqueue a socket cloned by solisten_clone() to the listen queue of the
  * listener it has been cloned from.
  *
- * Return 'true' if socket landed on complete queue, otherwise 'false'.
+ * On success, if 'completep' is non-NULL, it is set to 'true' if the socket
+ * landed on the complete queue, otherwise 'false'.
+ *
+ * If the listener has already been closed, its queues have been drained by
+ * soclose() and won't be pulled from again.  Therefore, the socket is
+ * not enqueued and ECONNABORTED is returned.  The socket is then left
+ * disassociated from the listener holding a single reference, just as
+ * soclose() leaves the sockets it removes from the queues, and the caller
+ * must soabort() it once it has dropped its protocol locks.
  */
-bool
-solisten_enqueue(struct socket *so, int connstatus)
+int
+solisten_enqueue(struct socket *so, int connstatus, bool *completep)
 {
 	struct socket *head = so->so_listen;
 
@@ -1307,6 +1319,10 @@ solisten_enqueue(struct socket *so, int connstatus)
 	refcount_init(&so->so_count, 1);
 
 	SOLISTEN_LOCK(head);
+	if (__predict_false((head->so_state & SS_LISTENCLOSED) != 0)) {
+		SOLISTEN_UNLOCK(head);
+		goto closed;
+	}
 	if (head->sol_accept_filter != NULL)
 		connstatus = 0;
 	so->so_state |= connstatus;
@@ -1316,8 +1332,14 @@ solisten_enqueue(struct socket *so, int connstatus)
 		so->so_qstate = SQ_COMP;
 		head->sol_qlen++;
 		solisten_wakeup(head);	/* unlocks */
-		return (true);
+		if (completep != NULL)
+			*completep = true;
+		return (0);
 	} else {
+		/* Was the listener unlocked since we last checked it was not
+		 * in a SS_LISTENCLOSED state? */
+		bool was_unlocked;
+
 		/*
 		 * Keep removing sockets from the head until there's room for
 		 * us to insert on the tail.  In pre-locking revisions, this
@@ -1325,6 +1347,7 @@ solisten_enqueue(struct socket *so, int connstatus)
 		 * threads and soabort() requires dropping locks, we must
 		 * loop waiting for the condition to be true.
 		 */
+		was_unlocked = false;
 		while (head->sol_incqlen > head->sol_qlimit) {
 			struct socket *sp;
 
@@ -1335,16 +1358,37 @@ solisten_enqueue(struct socket *so, int connstatus)
 			sp->so_qstate = SQ_NONE;
 			sp->so_listen = NULL;
 			SOCK_UNLOCK(sp);
+			was_unlocked = true;
 			sorele_locked(head);	/* does SOLISTEN_UNLOCK, head stays */
 			soabort(sp);
 			SOLISTEN_LOCK(head);
+		}
+		/*
+		 * If we dropped the lock above, the listener may have been
+		 * closed meanwhile.  Checking once here rather than once per
+		 * loop iteration suffices: closing resets sol_incqlen to 0,
+		 * which ends the loop, so we end up doing this check before
+		 * any other operation anyway.
+		 */
+		if (was_unlocked &&
+		    __predict_false((head->so_state & SS_LISTENCLOSED) != 0)) {
+			sorele_locked(head);	/* does SOLISTEN_UNLOCK */
+			goto closed;
 		}
 		TAILQ_INSERT_TAIL(&head->sol_incomp, so, so_list);
 		so->so_qstate = SQ_INCOMP;
 		head->sol_incqlen++;
 		SOLISTEN_UNLOCK(head);
-		return (false);
+		if (completep != NULL)
+			*completep = false;
+		return (0);
 	}
+
+closed:
+	SOCK_LOCK(so);
+	so->so_listen = NULL;
+	SOCK_UNLOCK(so);
+	return (ECONNABORTED);
 }
 
 #if defined(SCTP) || defined(SCTP_SUPPORT)
@@ -2020,6 +2064,12 @@ drop:
 	if ((listening = SOLISTENING(so))) {
 		struct socket *sp;
 
+		/*
+		 * A protocol may still hold a socket cloned from this
+		 * listener and not yet enqueued.  Make solisten_enqueue()
+		 * refuse it, since nothing will drain the queues after this.
+		 */
+		so->so_state |= SS_LISTENCLOSED;
 		TAILQ_INIT(&lqueue);
 		TAILQ_SWAP(&lqueue, &so->sol_incomp, socket, so_list);
 		TAILQ_CONCAT(&lqueue, &so->sol_comp, so_list);
