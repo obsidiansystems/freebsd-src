@@ -295,9 +295,9 @@ static int	unp_connectat(int, struct socket *, const char *, int,
 static int	unp_connect_peer(struct socket *, struct unpcb *,
 		    struct sockaddr **, struct thread *, bool);
 static int	unp_connectat_peer(struct thread *, int, const char *,
-		    struct socket **, struct mtx **, struct vnode **);
+		    struct socket **);
 static int	unp_vnode_peer(struct vnode *, struct thread *,
-		    struct socket **, struct mtx **, struct vnode **);
+		    struct socket **);
 static void	unp_connect2(struct socket *, struct socket *, bool);
 static void	unp_disconnect(struct unpcb *unp, struct unpcb *unp2);
 static void	unp_dispose(struct socket *so);
@@ -776,6 +776,11 @@ uipc_close(struct socket *so)
 		mtx_lock(vplock);
 	}
 	UNP_PCB_LOCK(unp);
+	/*
+	 * soclose() drains a listener's queues once we return, so stop
+	 * unp_connect_peer() from adding to them after that.
+	 */
+	unp->unp_flags |= UNP_CLOSED;
 	if (vp && unp->unp_vnode == NULL) {
 		mtx_unlock(vplock);
 		vp = NULL;
@@ -2955,8 +2960,6 @@ unp_connectat(int fd, struct socket *so, const char *path, int len,
 	struct unpcb *unp;
 	char buf[SOCK_MAXADDRLEN];
 	struct sockaddr *sa;
-	struct mtx *mtxp;
-	struct vnode *vp;
 	int error;
 	bool connreq;
 
@@ -3008,36 +3011,17 @@ unp_connectat(int fd, struct socket *so, const char *path, int len,
 	else
 		sa = NULL;
 
-	/*
-	 * Find the peer socket we're connecting to, and connect to it.
-	 *
-	 * If the peer is bound to a name in the filesystem, then we hold
-	 * the vnode pool lock until the connection is established, so as to
-	 * avoid racing with a close of the peer listening socket.  If the peer
-	 * is referenced by a file descriptor, then that reference prevents the
-	 * race, so no extra synchronization is needed.
-	 */
-	error = unp_connectat_peer(td, fd, buf, &so2, &mtxp, &vp);
-	if (error == 0) {
-		error = unp_connect_peer(so, sotounpcb(so2), &sa, td,
-		    referenced_peerp != NULL);
-		if (error == 0 && referenced_peerp != NULL) {
-			*referenced_peerp = so2;
-			so2 = NULL;
-		}
-
-		/*
-		 * Release references only after the pool lock is dropped in
-		 * order to avoid potential lock ordering issues.
-		 */
-		if (mtxp != NULL) {
-			mtx_unlock(mtxp);
-			vput(vp);
-		}
-		if (so2 != NULL)
-			sorele(so2);
-	}
-
+	error = unp_connectat_peer(td, fd, buf, &so2);
+	if (error != 0)
+		goto out;
+	error = unp_connect_peer(so, sotounpcb(so2), &sa, td,
+	    referenced_peerp != NULL);
+	/* Transfer the reference; the caller releases it after unlocking. */
+	if (error == 0 && referenced_peerp != NULL)
+		*referenced_peerp = so2;
+	else
+		sorele(so2);
+out:
 	free(sa, M_SONAME);
 	if (__predict_false(error)) {
 		UNP_PCB_LOCK(unp);
@@ -3087,7 +3071,7 @@ unp_socket_fd_peer(struct thread *td, int fd, struct socket **so2p)
  * descriptor in td_dupfd and fails with ENODEV, the same convention open(2)
  * follows via dupfdopen() for /dev/fd.  We honour it here and resolve that
  * descriptor as the peer, so a plain connect(2) to /dev/fd/N reaches the
- * socket.  Consumes the vnode reference.
+ * socket.  Does not consume 'vp'.
  */
 static int
 unp_dupfd_peer(struct vnode *vp, struct thread *td, struct socket **so2p)
@@ -3100,14 +3084,13 @@ unp_dupfd_peer(struct vnode *vp, struct thread *td, struct socket **so2p)
 	error = VOP_OPEN(vp, FREAD, td->td_ucred, td, NULL);
 	dupfd = td->td_dupfd;
 	td->td_dupfd = 0;
-	if (error == ENODEV && dupfd >= 0) {
-		error = unp_socket_fd_peer(td, dupfd, so2p);
-	} else if (error == 0) {
+	if (error == ENODEV && dupfd >= 0)
+		return (unp_socket_fd_peer(td, dupfd, so2p));
+	if (error == 0) {
 		/* Not the dupfd convention: an openable node is not a peer. */
 		(void)VOP_CLOSE(vp, FREAD, td->td_ucred, td);
 		error = ECONNREFUSED;
 	}
-	vput(vp);
 	return (error);
 }
 
@@ -3121,20 +3104,15 @@ unp_dupfd_peer(struct vnode *vp, struct thread *td, struct socket **so2p)
  *	/dev/fd/N pathname		fdescfs names a descriptor
  *	ordinary pathname		a bound socket looked up by path
  *
- * The caller must release the returned socket with sorele().  If the mutex
- * and vnode pointers are filled, they must be released as well.
+ * The caller must release the returned socket with sorele().
  */
 static int
 unp_connectat_peer(struct thread *td, int fd, const char *buf,
-    struct socket **so2p, struct mtx **mtxp, struct vnode **vpp)
+    struct socket **so2p)
 {
 	struct nameidata nd;
 	cap_rights_t rights;
 	int error;
-
-	*so2p = NULL;
-	*mtxp = NULL;
-	*vpp = NULL;
 
 	/*
 	 * An empty sun_path means 'fd' names the peer directly.  If it is a
@@ -3158,10 +3136,10 @@ unp_connectat_peer(struct thread *td, int fd, const char *buf,
 	NDFREE_PNBUF(&nd);
 
 	/*
-	 * Find our peer socket.  If it comes from a socket on the filesystem,
-	 * then we hold on to the vnode pool lock so as to interlock with a
-	 * close of the listening socket.  If the peer comes to us via an fd,
-	 * then the fd reference itself keeps the peer stable.
+	 * Dispatch on the resolved vnode, then drop it: for the socket cases
+	 * the returned reference keeps the peer stable, so the caller holds
+	 * no vnode lock across unp_connect_peer() (which matters for the
+	 * return_locked datagram fast path).
 	 *
 	 * A synthetic descriptor node -- as fdescfs fabricates for a /dev/fd/N
 	 * path -- carries no type of its own (VNON); opening it yields the
@@ -3176,7 +3154,8 @@ unp_connectat_peer(struct thread *td, int fd, const char *buf,
 	if (nd.ni_vp->v_type == VNON)
 		error = unp_dupfd_peer(nd.ni_vp, td, so2p);
 	else
-		error = unp_vnode_peer(nd.ni_vp, td, so2p, mtxp, vpp);
+		error = unp_vnode_peer(nd.ni_vp, td, so2p);
+	vput(nd.ni_vp);
 	return (error);
 }
 
@@ -3186,10 +3165,13 @@ unp_connectat_peer(struct thread *td, int fd, const char *buf,
  * enforces the caller's authorization to reach the socket -- filesystem
  * permission (VOP_ACCESS) and MAC (mac_vnode_check_open) -- which bare readers
  * of the vnode->pcb binding, such as vfs_unp_reclaim(), deliberately skip.
+ *
+ * The returned reference keeps the peer stable for unp_connect_peer() once vp's
+ * per-vnode binding lock is dropped, so the caller must release it with
+ * sorele().  Does not consume 'vp'.
  */
 static int
-unp_vnode_peer(struct vnode *vp, struct thread *td, struct socket **so2p,
-    struct mtx **mtxp, struct vnode **vpp)
+unp_vnode_peer(struct vnode *vp, struct thread *td, struct socket **so2p)
 {
 	struct mtx *vplock;
 	struct unpcb *unp2;
@@ -3197,43 +3179,33 @@ unp_vnode_peer(struct vnode *vp, struct thread *td, struct socket **so2p,
 
 	ASSERT_VOP_LOCKED(vp, __func__);
 
-	if (vp->v_type != VSOCK) {
-		error = ENOTSOCK;
-		goto fail;
-	}
+	if (vp->v_type != VSOCK)
+		return (ENOTSOCK);
 #ifdef MAC
 	error = mac_vnode_check_open(td->td_ucred, vp, VWRITE | VREAD);
 	if (error != 0)
-		goto fail;
+		return (error);
 #endif
 	error = VOP_ACCESS(vp, VWRITE, td->td_ucred, td);
 	if (error != 0)
-		goto fail;
+		return (error);
 
 	vplock = mtx_pool_find(unp_vp_mtxpool, vp);
 	mtx_lock(vplock);
 	VOP_UNP_CONNECT(vp, &unp2);
-	if (unp2 == NULL) {
-		mtx_unlock(vplock);
+	if (unp2 == NULL)
 		error = ECONNREFUSED;
-		goto fail;
-	}
-	soref(*so2p = unp2->unp_socket);
-	*mtxp = vplock;
-	*vpp = vp;
-	return (0);
-
-fail:
-	vput(vp);
+	else
+		soref(*so2p = unp2->unp_socket);
+	mtx_unlock(vplock);
 	return (error);
 }
 
 /*
  * Second half of connecting a unix socket: 'so' is our connecting socket,
  * with UNP_CONNECTING set, and 'unp2' is the PCB of the peer named by the
- * caller, which must guarantee its stability (by holding a reference on the
- * peer socket, or the vnode lock plus unp_vp_mtxpool lock for a peer found
- * via VOP_UNP_CONNECT()).
+ * caller, which must guarantee its stability by holding a reference on the
+ * peer socket.  Must be called with no locks held.
  *
  * For connection-oriented sockets '*sap' points to a buffer to hold the
  * listener's address; it is consumed (set to NULL) if used.  On success
@@ -3244,13 +3216,14 @@ unp_connect_peer(struct socket *so, struct unpcb *unp2, struct sockaddr **sap,
     struct thread *td, bool return_locked)
 {
 	struct socket *so2;
-	struct unpcb *unp, *unp3;
+	struct unpcb *unp, *unp3, *lunp;
 	int error;
 	bool connreq;
 
 	unp = sotounpcb(so);
 	KASSERT(unp != NULL, ("%s: unp == NULL", __func__));
 	connreq = (so->so_proto->pr_flags & PR_CONNREQUIRED) != 0;
+	lunp = NULL;
 
 	so2 = unp2->unp_socket;
 	if (so->so_type != so2->so_type)
@@ -3267,7 +3240,27 @@ unp_connect_peer(struct socket *so, struct unpcb *unp2, struct sockaddr **sap,
 			return (error);
 		}
 		unp3 = sotounpcb(so2);
-		unp_pcb_lock_pair(unp2, unp3);
+
+		/*
+		 * Hold the listener's lock until the new socket is on its
+		 * queue.  uipc_close() marks the listener closed under that
+		 * lock before soclose() drains the queue, so either we see
+		 * the mark, or we are enqueued in time to be drained.
+		 */
+		unp_pcb_lock_pair(unp, unp2);
+		if (__predict_false((unp2->unp_flags & UNP_CLOSED) != 0)) {
+			unp_pcb_unlock_pair(unp, unp2);
+			so2->so_listen = NULL;
+			refcount_init(&so2->so_count, 1);
+			sorele(so2);
+			return (ECONNREFUSED);
+		}
+
+		/*
+		 * It is safe to block on the PCB lock here since unp3 is
+		 * nascent and cannot be connected to any other sockets.
+		 */
+		UNP_PCB_LOCK(unp3);
 		if (unp2->unp_addr != NULL) {
 			bcopy(unp2->unp_addr, *sap, unp2->unp_addr->sun_len);
 			unp3->unp_addr = (struct sockaddr_un *)*sap;
@@ -3276,14 +3269,8 @@ unp_connect_peer(struct socket *so, struct unpcb *unp2, struct sockaddr **sap,
 
 		unp_copy_peercred(td, unp3, unp, unp2);
 
-		UNP_PCB_UNLOCK(unp2);
+		lunp = unp2;
 		unp2 = unp3;
-
-		/*
-		 * It is safe to block on the PCB lock here since unp2 is
-		 * nascent and cannot be connected to any other sockets.
-		 */
-		UNP_PCB_LOCK(unp);
 #ifdef MAC
 		mac_socketpeer_set_from_socket(so, so2);
 		mac_socketpeer_set_from_socket(so2, so);
@@ -3295,8 +3282,10 @@ unp_connect_peer(struct socket *so, struct unpcb *unp2, struct sockaddr **sap,
 	    sotounpcb(so2) == unp2,
 	    ("%s: unp2 %p so2 %p", __func__, unp2, so2));
 	unp_connect2(so, so2, connreq);
-	if (connreq)
+	if (connreq) {
 		(void)solisten_enqueue(so2, SS_ISCONNECTED);
+		UNP_PCB_UNLOCK(lunp);
+	}
 	KASSERT((unp->unp_flags & UNP_CONNECTING) != 0,
 	    ("%s: unp %p has UNP_CONNECTING clear", __func__, unp));
 	unp->unp_flags &= ~UNP_CONNECTING;
