@@ -240,6 +240,7 @@ struct socket {
 #define	SS_ASYNC		0x0200	/* async i/o notify */
 /* was	SS_ISCONFIRMING		0x0400	*/
 #define	SS_ISDISCONNECTED	0x2000	/* socket disconnected from peer */
+#define	SS_LISTENCLOSED		0x4000	/* listener closed, accepts no more */
 
 #ifdef _KERNEL
 
@@ -518,7 +519,7 @@ int	solisten(struct socket *so, int backlog, struct thread *td);
 void	solisten_proto(struct socket *so, int backlog);
 void	solisten_proto_abort(struct socket *so);
 int	solisten_proto_check(struct socket *so);
-bool	solisten_enqueue(struct socket *, int);
+int	solisten_enqueue(struct socket *, int, bool *);
 int	solisten_dequeue(struct socket *, struct socket **, int);
 struct socket *
 	solisten_clone(struct socket *);
