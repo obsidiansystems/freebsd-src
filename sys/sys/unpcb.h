@@ -118,6 +118,7 @@ struct unpcb {
 #define	UNP_CONNECTING			0x010	/* Currently connecting. */
 #define	UNP_BINDING			0x020	/* Currently binding. */
 #define	UNP_WAITING			0x040	/* Peer state is changing. */
+#define	UNP_CLOSED			0x080	/* Closed, accepts no more. */
 
 /*
  * Flags in unp_gcflag.
